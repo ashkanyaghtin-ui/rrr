@@ -1,0 +1,214 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user profile information and saved addresses.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique identifier for the user." },
+        "email": { "type": "string", "format": "email", "description": "User's email address." },
+        "displayName": { "type": "string", "description": "User's display name." },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string", "description": "e.g., Home, Work" },
+              "street": { "type": "string" },
+              "city": { "type": "string" },
+              "building": { "type": "string" },
+              "apartment": { "type": "string" },
+              "phone": { "type": "string" }
+            },
+            "required": ["id", "street", "city", "phone"]
+          }
+        }
+      },
+      "required": ["uid", "email"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Stores order details for both delivery and dine-in.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user, 'guest', or 'walk-in'." },
+        "items": { "type": "array", "description": "List of items in the order." },
+        "total": { "type": "number" },
+        "orderType": { "type": "string", "enum": ["delivery", "dine-in"] },
+        "tableNumber": { "type": "number", "description": "Table number for dine-in orders." },
+        "address": {
+          "type": "object",
+          "properties": {
+            "street": { "type": "string" },
+            "city": { "type": "string" },
+            "building": { "type": "string" },
+            "apartment": { "type": "string" },
+            "phone": { "type": "string" }
+          }
+        },
+        "status": { "type": "string", "enum": ["pending", "paid", "confirmed", "preparing", "packing", "ready", "out-for-delivery", "delivered", "completed", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "items", "total", "orderType", "status", "createdAt"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Stock levels for ingredients or items.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "stock": { "type": "number" },
+        "unit": { "type": "string" },
+        "lowStockThreshold": { "type": "number" },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "stock", "unit", "lastUpdated"]
+    },
+    "JournalEntry": {
+      "title": "Accounting Journal Entry",
+      "description": "Records of sales and refunds.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "type": { "type": "string", "enum": ["sale", "refund"] },
+        "amount": { "type": "number" },
+        "description": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "items": { "type": "array" }
+      },
+      "required": ["orderId", "type", "amount", "timestamp"]
+    },
+    "MenuItem": {
+      "title": "Menu Item",
+      "description": "An item on the restaurant menu.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "image": { "type": "string" },
+        "available": { "type": "boolean" }
+      },
+      "required": ["name", "price", "category", "available"]
+    },
+    "Category": {
+      "title": "Menu Category",
+      "description": "A category for menu items.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["name", "order"]
+    },
+    "Bill": {
+      "title": "Bill",
+      "description": "Accounts payable to vendors.",
+      "type": "object",
+      "properties": {
+        "vendorId": { "type": "string" },
+        "amount": { "type": "number" },
+        "dueDate": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["unpaid", "paid", "overdue"] },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["vendorId", "amount", "dueDate", "status"]
+    },
+    "Vendor": {
+      "title": "Vendor",
+      "description": "Supplier or service provider.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name"]
+    },
+    "Voucher": {
+      "title": "Voucher",
+      "description": "Financial voucher for receipts or payments.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["receipt", "payment", "cash_receipt"] },
+        "amount": { "type": "number" },
+        "description": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "ledgerGroupId": { "type": "string" },
+        "paymentMethod": { "type": "string" }
+      },
+      "required": ["type", "amount", "date"]
+    },
+    "Cheque": {
+      "title": "Cheque",
+      "description": "Tracking for issued or received cheques.",
+      "type": "object",
+      "properties": {
+        "chequeNumber": { "type": "string" },
+        "bank": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["pending", "cleared", "bounced"] },
+        "vendorId": { "type": "string" }
+      },
+      "required": ["chequeNumber", "amount", "date", "status"]
+    },
+    "Staff": {
+      "title": "Staff Member",
+      "description": "Employee or admin user.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "manager", "chef", "driver", "waiter"] },
+        "phone": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "role"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profile and addresses."
+    },
+    "orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders."
+    },
+    "menu/{itemId}": {
+      "schema": "MenuItem",
+      "description": "Menu items."
+    },
+    "categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Menu categories."
+    },
+    "bills/{billId}": {
+      "schema": "Bill",
+      "description": "Accounts payable."
+    },
+    "vendors/{vendorId}": {
+      "schema": "Vendor",
+      "description": "Suppliers."
+    },
+    "vouchers/{voucherId}": {
+      "schema": "Voucher",
+      "description": "Financial vouchers."
+    },
+    "cheques/{chequeId}": {
+      "schema": "Cheque",
+      "description": "Cheque tracking."
+    },
+    "staff/{staffId}": {
+      "schema": "Staff",
+      "description": "Staff members."
+    }
+  }
+}

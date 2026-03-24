@@ -1,0 +1,7 @@
+{
+  "name": "Rivas Restaurant",
+  "description": "Rivas Restaurant - A Good Choice! Order delicious food online with our modern menu and delivery service.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

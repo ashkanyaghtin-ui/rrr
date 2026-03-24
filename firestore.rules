@@ -1,0 +1,265 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (UID)
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - addresses: list (optional) - array of address objects
+    //
+    // Collection: orders
+    // Document ID: orderId (auto-generated)
+    // Fields:
+    //   - userId: string (required) - UID, 'guest', or 'walk-in'
+    //   - items: list (required) - array of menu items
+    //   - total: number (required)
+    //   - orderType: string (required) - 'delivery' or 'dine-in'
+    //   - tableNumber: number (optional) - for dine-in
+    //   - address: map (optional) - delivery address
+    //   - status: string (required) - status enum
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: menu
+    // Document ID: itemId (auto-generated)
+    // Fields:
+    //   - name: string (required)
+    //   - price: number (required)
+    //   - category: string (required)
+    //   - available: bool (required)
+    //
+    // Collection: categories
+    // Document ID: categoryId (auto-generated)
+    // Fields:
+    //   - name: string (required)
+    //   - order: number (required)
+    //
+    // Collection: customers
+    // Document ID: customerId (auto-generated)
+    // Fields:
+    //   - name: string (required)
+    //   - phone: string (required)
+    //   - email: string (optional)
+    //   - addresses: list (optional)
+    //   - balance: number (optional)
+    //   - loyaltyPoints: number (optional)
+    //   - groupId: string (optional)
+    //
+    // Collection: customerGroups
+    // Document ID: groupId (auto-generated)
+    // Fields:
+    //   - name: string (required)
+    //   - discountPercentage: number (required)
+    //   - description: string (optional)
+    //
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && request.auth.token.email == 'ashkan.yaghtin@gmail.com' && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') || isSuperAdmin());
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidAddress(addr) {
+      return addr is map &&
+             addr.keys().hasAll(['street', 'city', 'phone']) &&
+             addr.street is string && addr.street.size() > 0 && addr.street.size() < 200 &&
+             addr.city is string && addr.city.size() > 0 && addr.city.size() < 100 &&
+             addr.phone is string && addr.phone.size() > 0 && addr.phone.size() < 20;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.uid is string &&
+             data.email is string && isValidEmail(data.email) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('addresses' in data) || (data.addresses is list && data.addresses.size() <= 10));
+    }
+
+    function isValidOrder(data) {
+      return data.userId is string &&
+             data.items is list && data.items.size() > 0 &&
+             data.total is number && data.total >= 0 &&
+             data.orderType in ['delivery', 'dine-in', 'pickup', 'take-out'] &&
+             (data.orderType == 'dine-in' ? (data.tableId is string) : true) &&
+             data.status in ['pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized', 'cancelled', 'paid'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidJournalEntry(data) {
+      return data.orderId is string &&
+             data.type in ['sale', 'refund'] &&
+             data.amount is number &&
+             data.description is string &&
+             data.timestamp is timestamp &&
+             data.items is list;
+    }
+
+    function isValidCustomer(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.phone is string && data.phone.size() > 0 &&
+             (!('email' in data) || data.email is string) &&
+             (!('addresses' in data) || data.addresses is list) &&
+             (!('balance' in data) || data.balance is number) &&
+             (!('loyaltyPoints' in data) || data.loyaltyPoints is number) &&
+             (!('groupId' in data) || data.groupId is string);
+    }
+
+    function isValidCustomerGroup(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.discountPercentage is number && data.discountPercentage >= 0 &&
+             (!('description' in data) || data.description is string);
+    }
+
+    function isValidTable(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.capacity is number && data.capacity > 0 &&
+             data.status in ['available', 'occupied', 'reserved', 'cleaning'] &&
+             data.x is number && data.y is number &&
+             data.width is number && data.height is number &&
+             data.shape in ['rectangle', 'circle'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    // Orders collection
+    match /orders/{orderId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow create: if (
+        (isAuthenticated() && request.resource.data.userId == request.auth.uid) ||
+        (request.resource.data.userId == 'guest') ||
+        (isAdmin() && request.resource.data.userId == 'walk-in')
+      ) && isValidOrder(request.resource.data);
+      allow update: if isAuthenticated();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /menu/{itemId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /journal/{entryId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() && isValidJournalEntry(request.resource.data);
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /inventory/{itemId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /tables/{tableId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidTable(request.resource.data);
+      allow update: if isAuthenticated() && isValidTable(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /customers/{customerId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    match /customerGroups/{groupId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /stores/{storeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /warehouses/{warehouseId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /wastage/{wastageId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /vendors/{vendorId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /bills/{billId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /vouchers/{voucherId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /cheques/{chequeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /staff/{staffId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
