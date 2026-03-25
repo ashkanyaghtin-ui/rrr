@@ -66,8 +66,8 @@ export default function POS({ onClose }: POSProps) {
     const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const allOrders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
-      // Show all orders in POS, including finalized for the session
-      setOrders(allOrders.filter(o => o.status !== 'cancelled'));
+      // Show only active orders in POS (not finalized or cancelled)
+      setOrders(allOrders.filter(o => o.status !== 'cancelled' && o.status !== 'finalized'));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'orders'));
 
     const unsubscribeMenu = onSnapshot(collection(db, 'menu'), (snapshot) => {
@@ -957,17 +957,26 @@ export default function POS({ onClose }: POSProps) {
                     {isSplitBill && <span className="text-sm text-zinc-400 ml-2 font-bold">per person</span>}
                   </p>
                 </div>
-                <button
-                  onClick={settleBill}
-                  disabled={(paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < settlingOrder.total)) || isSubmitting}
-                  className="bg-zinc-900 text-white px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl shadow-black/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
-                >
-                  {isSubmitting ? (
-                    <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    'Finalize Payment'
-                  )}
-                </button>
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => printBill(settlingOrder)}
+                    className="bg-zinc-100 text-zinc-900 px-8 py-5 rounded-[2rem] font-black uppercase tracking-widest hover:bg-zinc-200 transition-all flex items-center justify-center gap-3"
+                  >
+                    <Printer size={20} />
+                    Print Bill
+                  </button>
+                  <button
+                    onClick={settleBill}
+                    disabled={(paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < settlingOrder.total)) || isSubmitting}
+                    className="bg-zinc-900 text-white px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl shadow-black/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
+                  >
+                    {isSubmitting ? (
+                      <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      'Finalize Payment'
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

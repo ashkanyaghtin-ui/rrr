@@ -87,20 +87,6 @@ export interface Order {
   };
 }
 
-export interface JournalEntry {
-  id: string;
-  orderId?: string;
-  type: 'sale' | 'refund' | 'wastage' | 'expense';
-  amount: number;
-  description: string;
-  timestamp: any;
-  items?: {
-    name: string;
-    quantity: number;
-    price: number;
-  }[];
-}
-
 export interface InventoryItem {
   id: string;
   name: string;
@@ -139,10 +125,73 @@ export interface CustomerGroup {
   description?: string;
 }
 
+export interface Journal {
+  id: string;
+  date: any;
+  referenceId?: string;
+  referenceType: 'voucher' | 'bill' | 'cheque' | 'sale' | 'manual';
+  description: string;
+  accountId: string;
+  debit: number;
+  credit: number;
+  taxRateId?: string;
+  taxAmount?: number;
+  createdAt: any;
+}
+
+export interface TaxRate {
+  id: string;
+  name: string;
+  rate: number;
+  description?: string;
+  isActive: boolean;
+}
+
+export interface Voucher {
+  id: string;
+  voucherNo: string;
+  date: any;
+  type: 'receipt' | 'payment';
+  accountId: string; // The account being paid to/from (e.g. Cash, Bank)
+  partyAccountId: string; // The other side of the transaction
+  amount: number;
+  description: string;
+  status: 'pending' | 'posted' | 'cancelled';
+}
+
+export interface Bill {
+  id: string;
+  billNo: string;
+  date: any;
+  vendorId: string;
+  items: {
+    inventoryItemId: string;
+    name: string;
+    quantity: number;
+    price: number;
+    taxRateId?: string;
+  }[];
+  totalAmount: number;
+  taxTotal: number;
+  status: 'pending' | 'posted' | 'cancelled';
+}
+
+export interface Cheque {
+  id: string;
+  chequeNo: string;
+  date: any;
+  bankAccountId: string;
+  partyAccountId: string;
+  amount: number;
+  type: 'issued' | 'received';
+  status: 'pending' | 'cleared' | 'bounced' | 'cancelled';
+}
+
 export interface LedgerGroup {
   id: string;
   name: string;
   type: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
   parentGroupId?: string;
+  isAccount: boolean; // If true, it's a ledger account, otherwise it's a group
   description?: string;
 }

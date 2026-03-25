@@ -93,6 +93,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [vendors, setVendors] = useState<any[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [cheques, setCheques] = useState<any[]>([]);
+  const [journalEntries, setJournalEntries] = useState<any[]>([]);
   const [staff, setStaff] = useState<any[]>([]);
   const [ledgerGroups, setLedgerGroups] = useState<LedgerGroup[]>([]);
   const [isManagingTree, setIsManagingTree] = useState(false);
@@ -120,7 +121,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     costPerUnit: 0,
     lowStockThreshold: 10
   });
-  const [adjustingStock, setAdjustingStock] = useState<{ id: string, type: 'add' | 'remove', amount: number } | null>(null);
+  const [adjustingStock, setAdjustingStock] = useState<{ id: string, type: 'add' | 'remove', amount: number, price?: number } | null>(null);
   const [editingInventoryId, setEditingInventoryId] = useState<string | null>(null);
   const [editInventoryForm, setEditInventoryForm] = useState<Partial<InventoryItem>>({});
 
@@ -129,8 +130,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     store: '',
     orderNo: '',
     orderType: '',
-    fromDate: '',
-    toDate: '',
+    fromDate: new Date().toISOString().split('T')[0],
+    toDate: new Date().toISOString().split('T')[0],
     salesFromDate: '',
     salesToDate: '',
     kotNo: '',
@@ -159,11 +160,21 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [isAddingBill, setIsAddingBill] = useState(false);
   const [isAddingCheque, setIsAddingCheque] = useState(false);
   const [isAddingVendor, setIsAddingVendor] = useState(false);
+  const [isAddingJournalEntry, setIsAddingJournalEntry] = useState(false);
   
   const [voucherForm, setVoucherForm] = useState({ type: 'receipt', amount: 0, description: '', date: new Date().toISOString().split('T')[0], paymentMethod: 'cash' });
   const [billForm, setBillForm] = useState({ vendorId: '', amount: 0, dueDate: new Date().toISOString().split('T')[0], description: '', status: 'unpaid' });
   const [chequeForm, setChequeForm] = useState({ chequeNumber: '', bank: '', amount: 0, date: new Date().toISOString().split('T')[0], status: 'pending', vendorId: '' });
   const [vendorForm, setVendorForm] = useState({ name: '', phone: '', email: '', address: '' });
+  const [journalEntryForm, setJournalEntryForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    reference: '',
+    description: '',
+    lines: [
+      { accountId: '', accountName: '', debit: 0, credit: 0 },
+      { accountId: '', accountName: '', debit: 0, credit: 0 }
+    ]
+  });
 
   useEffect(() => {
     if (!user) return;
@@ -272,12 +283,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     const unsubCheques = onSnapshot(collection(db, 'cheques'), (snapshot) => {
       setCheques(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'cheques'));
+    const unsubJournalEntries = onSnapshot(collection(db, 'journal_entries'), (snapshot) => {
+      setJournalEntries(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'journal_entries'));
 
     return () => {
       unsubBills();
       unsubVendors();
       unsubVouchers();
       unsubCheques();
+      unsubJournalEntries();
     };
   }, [user]);
 
@@ -368,6 +383,49 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       setVendorForm({ name: '', phone: '', email: '', address: '' });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'vendors');
+    }
+  };
+
+  const handleAddJournalEntry = async () => {
+    const totalDebit = journalEntryForm.lines.reduce((sum, line) => sum + line.debit, 0);
+    const totalCredit = journalEntryForm.lines.reduce((sum, line) => sum + line.credit, 0);
+
+    if (Math.abs(totalDebit - totalCredit) > 0.01) {
+      alert("Debits and Credits must balance!");
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'journal_entries'), {
+        ...journalEntryForm,
+        timestamp: serverTimestamp()
+      });
+      
+      // Also add to the general journal for the dashboard
+      for (const line of journalEntryForm.lines) {
+        if (line.debit > 0 || line.credit > 0) {
+          await addDoc(collection(db, 'journal'), {
+            type: line.debit > 0 ? 'expense' : 'sale', // Simplified for dashboard
+            amount: line.debit > 0 ? line.debit : line.credit,
+            description: `${journalEntryForm.description} (${line.accountName})`,
+            timestamp: serverTimestamp(),
+            accountId: line.accountId
+          });
+        }
+      }
+
+      setIsAddingJournalEntry(false);
+      setJournalEntryForm({
+        date: new Date().toISOString().split('T')[0],
+        reference: '',
+        description: '',
+        lines: [
+          { accountId: '', accountName: '', debit: 0, credit: 0 },
+          { accountId: '', accountName: '', debit: 0, credit: 0 }
+        ]
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'journal_entries');
     }
   };
 
@@ -703,6 +761,18 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             quantity: item.quantity,
             price: item.price
           }))
+        });
+
+        // Also create a formal journal entry
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `ORD-${order.id.slice(-6).toUpperCase()}`,
+          description: `Sale: Order #${order.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: [
+            { accountId: order.paymentMethod === 'cash' ? 'cash' : 'bank', accountName: order.paymentMethod === 'cash' ? 'Cash' : 'Bank', debit: order.total, credit: 0 },
+            { accountId: 'sales', accountName: 'Sales Revenue', debit: 0, credit: order.total }
+          ]
         });
         console.log("Journal entry created for order:", orderId);
       }
@@ -1899,44 +1969,90 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                           </div>
                           
                           {adjustingStock?.id === item.id && (
-                            <div className="mt-4 p-3 bg-white rounded-xl border border-zinc-200 flex items-center gap-2">
-                              <span className="text-sm font-bold text-zinc-600">
-                                {adjustingStock.type === 'add' ? 'Add' : 'Remove'}:
-                              </span>
-                              <input
-                                type="number"
-                                className="w-20 p-1.5 rounded-lg border border-zinc-200 text-sm focus:ring-2 focus:ring-primary outline-none"
-                                value={adjustingStock.amount || ''}
-                                onChange={e => setAdjustingStock({ ...adjustingStock, amount: Number(e.target.value) })}
-                                autoFocus
-                              />
-                              <button
-                                onClick={async () => {
-                                  if (!adjustingStock.amount || isNaN(adjustingStock.amount)) return;
-                                  try {
-                                    const newStock = adjustingStock.type === 'add' 
-                                      ? item.stock + adjustingStock.amount 
-                                      : Math.max(0, item.stock - adjustingStock.amount);
-                                    
-                                    await updateDoc(doc(db, 'inventory', item.id), {
-                                      stock: newStock,
-                                      lastUpdated: serverTimestamp()
-                                    });
-                                    setAdjustingStock(null);
-                                  } catch (err) {
-                                    handleFirestoreError(err, OperationType.UPDATE, `inventory/${item.id}`);
-                                  }
-                                }}
-                                className="p-1.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors ml-auto"
-                              >
-                                <CheckCircle2 size={16} />
-                              </button>
-                              <button
-                                onClick={() => setAdjustingStock(null)}
-                                className="p-1.5 text-zinc-400 hover:bg-zinc-100 rounded-lg transition-colors"
-                              >
-                                <X size={16} />
-                              </button>
+                            <div className="mt-4 p-3 bg-white rounded-xl border border-zinc-200 flex flex-col gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-bold text-zinc-600">
+                                  {adjustingStock.type === 'add' ? 'Add Qty' : 'Remove Qty'}:
+                                </span>
+                                <input
+                                  type="number"
+                                  className="w-20 p-1.5 rounded-lg border border-zinc-200 text-sm focus:ring-2 focus:ring-primary outline-none"
+                                  value={adjustingStock.amount || ''}
+                                  onChange={e => setAdjustingStock({ ...adjustingStock, amount: Number(e.target.value) })}
+                                  autoFocus
+                                />
+                              </div>
+                              
+                              {adjustingStock.type === 'add' && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-bold text-zinc-600">Unit Price:</span>
+                                  <input
+                                    type="number"
+                                    className="w-20 p-1.5 rounded-lg border border-zinc-200 text-sm focus:ring-2 focus:ring-primary outline-none"
+                                    placeholder="Price"
+                                    value={adjustingStock.price || ''}
+                                    onChange={e => setAdjustingStock({ ...adjustingStock, price: Number(e.target.value) })}
+                                  />
+                                </div>
+                              )}
+
+                              <div className="flex items-center gap-2 mt-2">
+                                <button
+                                  onClick={async () => {
+                                    if (!adjustingStock.amount || isNaN(adjustingStock.amount)) return;
+                                    try {
+                                      const currentStock = item.stock || 0;
+                                      const currentCost = item.costPerUnit || 0;
+                                      const newAmount = adjustingStock.amount;
+                                      const purchasePrice = adjustingStock.price || 0;
+
+                                      let newStock = currentStock;
+                                      let newAverageCost = currentCost;
+
+                                      if (adjustingStock.type === 'add') {
+                                        newStock = currentStock + newAmount;
+                                        // Average Costing Formula: (Old Total Value + New Purchase Value) / (Old Total Quantity + New Purchase Quantity)
+                                        if (newStock > 0) {
+                                          newAverageCost = ((currentStock * currentCost) + (newAmount * purchasePrice)) / newStock;
+                                        } else {
+                                          newAverageCost = purchasePrice;
+                                        }
+                                        
+                                        // Record purchase expense in journal
+                                        if (purchasePrice > 0) {
+                                          await addDoc(collection(db, 'journal'), {
+                                            type: 'expense',
+                                            amount: newAmount * purchasePrice,
+                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrency(purchasePrice)})`,
+                                            timestamp: serverTimestamp()
+                                          });
+                                        }
+                                      } else {
+                                        newStock = Math.max(0, currentStock - newAmount);
+                                        // Cost per unit remains the same for removals (consumption)
+                                      }
+                                      
+                                      await updateDoc(doc(db, 'inventory', item.id), {
+                                        stock: newStock,
+                                        costPerUnit: newAverageCost,
+                                        lastUpdated: serverTimestamp()
+                                      });
+                                      setAdjustingStock(null);
+                                    } catch (err) {
+                                      handleFirestoreError(err, OperationType.UPDATE, `inventory/${item.id}`);
+                                    }
+                                  }}
+                                  className="p-1.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors"
+                                >
+                                  <CheckCircle2 size={16} />
+                                </button>
+                                <button
+                                  onClick={() => setAdjustingStock(null)}
+                                  className="p-1.5 text-zinc-400 hover:bg-zinc-100 rounded-lg transition-colors"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </div>
                             </div>
                           )}
                         </>
@@ -1954,7 +2070,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   <p className="text-sm text-zinc-500 font-medium">Manage your books, vouchers, and financial reports</p>
                 </div>
                 <div className="flex items-center gap-2 bg-zinc-100 p-1 rounded-2xl">
-                  {(['dashboard', 'vouchers', 'bills', 'banking', 'taxes', 'reports'] as const).map((tab) => (
+                  {(['dashboard', 'journal', 'vouchers', 'bills', 'banking', 'taxes', 'reports'] as const).map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setAccountingSubTab(tab)}
@@ -2152,6 +2268,208 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                           </td>
                         </tr>
                       ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : accountingSubTab === 'journal' ? (
+            <div className="space-y-6">
+              {isAddingJournalEntry && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                  <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-4xl p-8 animate-in zoom-in-95 overflow-y-auto max-h-[90vh]">
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">New Journal Entry</h3>
+                      <button onClick={() => setIsAddingJournalEntry(false)} className="p-2 bg-zinc-100 text-zinc-500 rounded-full hover:bg-zinc-200 transition-colors">
+                        <X size={20} />
+                      </button>
+                    </div>
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Date</label>
+                          <input 
+                            type="date" 
+                            className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                            value={journalEntryForm.date}
+                            onChange={e => setJournalEntryForm({...journalEntryForm, date: e.target.value})}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Reference</label>
+                          <input 
+                            type="text" 
+                            className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                            value={journalEntryForm.reference}
+                            onChange={e => setJournalEntryForm({...journalEntryForm, reference: e.target.value})}
+                            placeholder="e.g. JV-001"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Description</label>
+                          <input 
+                            type="text" 
+                            className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                            value={journalEntryForm.description}
+                            onChange={e => setJournalEntryForm({...journalEntryForm, description: e.target.value})}
+                            placeholder="Entry description..."
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-sm font-bold text-zinc-900 uppercase tracking-wider">Entry Lines</h4>
+                          <button 
+                            onClick={() => setJournalEntryForm({
+                              ...journalEntryForm,
+                              lines: [...journalEntryForm.lines, { accountId: '', accountName: '', debit: 0, credit: 0 }]
+                            })}
+                            className="text-xs font-bold text-primary hover:underline"
+                          >
+                            + Add Line
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-12 gap-4 px-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                            <div className="col-span-6">Account</div>
+                            <div className="col-span-2 text-right">Debit</div>
+                            <div className="col-span-2 text-right">Credit</div>
+                            <div className="col-span-2"></div>
+                          </div>
+                          {journalEntryForm.lines.map((line, index) => (
+                            <div key={index} className="grid grid-cols-12 gap-4 items-center">
+                              <div className="col-span-6">
+                                <select 
+                                  className="w-full p-3 bg-zinc-50 border border-zinc-100 rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                                  value={line.accountId}
+                                  onChange={e => {
+                                    const account = [...ledgerGroups, { id: 'cash', name: 'Cash' }, { id: 'bank', name: 'Bank' }].find(a => a.id === e.target.value);
+                                    const newLines = [...journalEntryForm.lines];
+                                    newLines[index] = { ...line, accountId: e.target.value, accountName: account?.name || '' };
+                                    setJournalEntryForm({ ...journalEntryForm, lines: newLines });
+                                  }}
+                                >
+                                  <option value="">Select Account</option>
+                                  <optgroup label="System Accounts">
+                                    <option value="cash">Cash</option>
+                                    <option value="bank">Bank</option>
+                                    <option value="sales">Sales Revenue</option>
+                                    <option value="inventory">Inventory Asset</option>
+                                    <option value="wastage">Wastage Expense</option>
+                                  </optgroup>
+                                  <optgroup label="Ledger Groups">
+                                    {ledgerGroups.map(lg => (
+                                      <option key={lg.id} value={lg.id}>{lg.name}</option>
+                                    ))}
+                                  </optgroup>
+                                </select>
+                              </div>
+                              <div className="col-span-2">
+                                <input 
+                                  type="number" 
+                                  className="w-full p-3 bg-zinc-50 border border-zinc-100 rounded-xl text-sm font-bold text-right focus:ring-2 focus:ring-primary outline-none"
+                                  value={line.debit}
+                                  onChange={e => {
+                                    const newLines = [...journalEntryForm.lines];
+                                    newLines[index] = { ...line, debit: parseFloat(e.target.value) || 0, credit: 0 };
+                                    setJournalEntryForm({ ...journalEntryForm, lines: newLines });
+                                  }}
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <input 
+                                  type="number" 
+                                  className="w-full p-3 bg-zinc-50 border border-zinc-100 rounded-xl text-sm font-bold text-right focus:ring-2 focus:ring-primary outline-none"
+                                  value={line.credit}
+                                  onChange={e => {
+                                    const newLines = [...journalEntryForm.lines];
+                                    newLines[index] = { ...line, credit: parseFloat(e.target.value) || 0, debit: 0 };
+                                    setJournalEntryForm({ ...journalEntryForm, lines: newLines });
+                                  }}
+                                />
+                              </div>
+                              <div className="col-span-2 flex justify-end">
+                                <button 
+                                  onClick={() => {
+                                    const newLines = journalEntryForm.lines.filter((_, i) => i !== index);
+                                    setJournalEntryForm({ ...journalEntryForm, lines: newLines });
+                                  }}
+                                  className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-12 gap-4 px-4 pt-4 border-t border-zinc-100">
+                          <div className="col-span-6 text-sm font-bold text-zinc-900">Total</div>
+                          <div className="col-span-2 text-right text-sm font-black text-zinc-900">
+                            {formatCurrency(journalEntryForm.lines.reduce((sum, line) => sum + line.debit, 0))}
+                          </div>
+                          <div className="col-span-2 text-right text-sm font-black text-zinc-900">
+                            {formatCurrency(journalEntryForm.lines.reduce((sum, line) => sum + line.credit, 0))}
+                          </div>
+                          <div className="col-span-2"></div>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={handleAddJournalEntry}
+                        className="w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.02] transition-all"
+                      >
+                        Post Journal Entry
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-zinc-900">Journal Entries</h3>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => exportToExcel(journalEntries, 'Journal_Entries')}
+                    className="flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-50 transition-all"
+                  >
+                    <Download size={14} /> Export
+                  </button>
+                  <button 
+                    onClick={() => setIsAddingJournalEntry(true)}
+                    className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
+                  >
+                    <Plus size={14} /> New Entry
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-[2.5rem] border border-zinc-100 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="bg-zinc-50 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+                        <th className="px-6 py-4">Date</th>
+                        <th className="px-6 py-4">Reference</th>
+                        <th className="px-6 py-4">Description</th>
+                        <th className="px-6 py-4 text-right">Total Debit</th>
+                        <th className="px-6 py-4 text-right">Total Credit</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {journalEntries.map(entry => {
+                        const totalDebit = entry.lines.reduce((sum: number, line: any) => sum + line.debit, 0);
+                        const totalCredit = entry.lines.reduce((sum: number, line: any) => sum + line.credit, 0);
+                        return (
+                          <tr key={entry.id} className="hover:bg-zinc-50/50 transition-all">
+                            <td className="px-6 py-4 text-sm text-zinc-500">{entry.date}</td>
+                            <td className="px-6 py-4 text-sm font-bold text-zinc-900">{entry.reference}</td>
+                            <td className="px-6 py-4 text-sm text-zinc-500">{entry.description}</td>
+                            <td className="px-6 py-4 text-sm font-black text-right text-emerald-600">{formatCurrency(totalDebit)}</td>
+                            <td className="px-6 py-4 text-sm font-black text-right text-blue-600">{formatCurrency(totalCredit)}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -2671,6 +2989,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Profit & Loss Report */}
                 <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
                   <div className="flex items-center gap-4">
                     <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
@@ -2678,24 +2997,60 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     </div>
                     <div>
                       <h4 className="font-bold text-zinc-900">Profit & Loss</h4>
-                      <p className="text-xs text-zinc-500">Summary of revenue vs costs</p>
+                      <p className="text-xs text-zinc-500">Revenue, COGS, and Expenses</p>
                     </div>
                   </div>
                   <div className="space-y-4">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-zinc-500">Total Revenue</span>
-                      <span className="font-bold text-emerald-600">+{formatCurrency(journal.filter(j => j.type === 'sale').reduce((acc, curr) => acc + curr.amount, 0))}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-zinc-500">Total Costs</span>
-                      <span className="font-bold text-red-600">-{formatCurrency(journal.filter(j => j.type !== 'sale').reduce((acc, curr) => acc + curr.amount, 0))}</span>
-                    </div>
-                    <div className="pt-4 border-t flex justify-between items-center">
-                      <span className="font-bold text-zinc-900">Net Profit</span>
-                      <span className="text-xl font-black text-zinc-900">
-                        {formatCurrency(journal.reduce((acc, curr) => acc + (curr.type === 'sale' ? curr.amount : -curr.amount), 0))}
-                      </span>
-                    </div>
+                    {(() => {
+                      const revenue = journal.filter(j => j.type === 'sale').reduce((acc, curr) => acc + curr.amount, 0);
+                      
+                      // Calculate COGS based on finalized orders and their recipes
+                      let cogs = 0;
+                      orders.filter(o => o.status === 'finalized').forEach(order => {
+                        order.items.forEach(orderItem => {
+                          const menuItem = items.find(m => m.id === orderItem.itemId);
+                          if (menuItem && menuItem.recipe) {
+                            menuItem.recipe.forEach(ing => {
+                              const invItem = inventory.find(i => i.id === ing.inventoryItemId);
+                              cogs += (invItem?.costPerUnit || 0) * ing.quantity * orderItem.quantity;
+                            });
+                          }
+                        });
+                      });
+
+                      const expenses = journal.filter(j => j.type === 'expense' && !j.description.includes('Inventory Purchase')).reduce((acc, curr) => acc + curr.amount, 0);
+                      
+                      const grossProfit = revenue - cogs;
+                      const netProfit = grossProfit - expenses;
+
+                      return (
+                        <>
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-zinc-500">Revenue (Sales)</span>
+                            <span className="font-bold text-emerald-600">+{formatCurrency(revenue)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-zinc-500">Cost of Goods Sold (COGS)</span>
+                            <span className="font-bold text-red-600">-{formatCurrency(cogs)}</span>
+                          </div>
+                          <div className="pt-2 border-t flex justify-between items-center text-sm font-bold">
+                            <span className="text-zinc-900">Gross Profit</span>
+                            <span className={grossProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}>{formatCurrency(grossProfit)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-zinc-500">Operating Expenses</span>
+                            <span className="font-bold text-red-600">-{formatCurrency(expenses)}</span>
+                          </div>
+                          <div className="pt-4 border-t flex justify-between items-center">
+                            <span className="font-bold text-zinc-900">Net Profit</span>
+                            <span className={`text-xl font-black ${netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                              {formatCurrency(netProfit)}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 mt-4 italic">* Inventory purchases are treated as assets until consumed (COGS).</p>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
                 <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
@@ -3436,6 +3791,18 @@ function WastageSection({ wastage, inventory }: { wastage: any[], inventory: Inv
             price: item.costPerUnit || 0
           }]
         });
+
+        // Also create a formal journal entry
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: 'WASTAGE',
+          description: `Wastage: ${item.name} (${form.reason})`,
+          timestamp: serverTimestamp(),
+          lines: [
+            { accountId: 'wastage', accountName: 'Wastage Expense', debit: (item.costPerUnit || 0) * form.quantity, credit: 0 },
+            { accountId: 'inventory', accountName: 'Inventory Asset', debit: 0, credit: (item.costPerUnit || 0) * form.quantity }
+          ]
+        });
       }
 
       setForm({ itemId: '', quantity: 0, reason: '' });
@@ -3648,7 +4015,8 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
     date: new Date().toISOString().split('T')[0],
     items: [] as { inventoryItemId: string, quantity: number, costPerUnit: number }[],
     amountPaid: 0,
-    totalAmount: 0
+    totalAmount: 0,
+    accountId: 'cash'
   });
 
   const handleAddSupplier = async () => {
@@ -3723,7 +4091,23 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
           description: `Payment for Invoice #${invoiceForm.invoiceNumber} from ${selectedSupplier.name}`,
           timestamp: serverTimestamp(),
           billId: billRef.id,
-          vendorId: selectedSupplier.id
+          vendorId: selectedSupplier.id,
+          accountId: invoiceForm.accountId
+        });
+
+        // Also create a formal journal entry
+        await addDoc(collection(db, 'journal_entries'), {
+          date: invoiceForm.date,
+          reference: invoiceForm.invoiceNumber,
+          description: `Purchase from ${selectedSupplier.name}`,
+          timestamp: serverTimestamp(),
+          lines: [
+            { accountId: 'inventory', accountName: 'Inventory Asset', debit: invoiceForm.totalAmount, credit: 0 },
+            { accountId: invoiceForm.accountId, accountName: invoiceForm.accountId === 'cash' ? 'Cash' : 'Bank', debit: 0, credit: invoiceForm.amountPaid },
+            ...(invoiceForm.totalAmount > invoiceForm.amountPaid ? [
+              { accountId: 'accounts_payable', accountName: 'Accounts Payable', debit: 0, credit: invoiceForm.totalAmount - invoiceForm.amountPaid }
+            ] : [])
+          ]
         });
       }
 
@@ -3733,7 +4117,8 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
         date: new Date().toISOString().split('T')[0],
         items: [],
         amountPaid: 0,
-        totalAmount: 0
+        totalAmount: 0,
+        accountId: 'cash'
       });
       setSelectedSupplier(null);
     } catch (err) {
@@ -3850,6 +4235,17 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
                 value={invoiceForm.date}
                 onChange={e => setInvoiceForm({ ...invoiceForm, date: e.target.value })}
               />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1 block">Payment Account</label>
+              <select
+                className="w-full p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
+                value={invoiceForm.accountId}
+                onChange={e => setInvoiceForm({ ...invoiceForm, accountId: e.target.value })}
+              >
+                <option value="cash">Cash</option>
+                <option value="bank">Bank</option>
+              </select>
             </div>
           </div>
 
