@@ -21,18 +21,40 @@ export default function POS({ onClose }: POSProps) {
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
   const [posStep, setPosStep] = useState<'tables' | 'menu'>('tables');
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
+  const [isMergingTables, setIsMergingTables] = useState(false);
+  const [selectedTablesToMerge, setSelectedTablesToMerge] = useState<Table[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [currentOrderItems, setCurrentOrderItems] = useState<{ item: MenuItem, quantity: number }[]>([]);
   
   const [isSettlingBill, setIsSettlingBill] = useState(false);
   const [settlingOrder, setSettlingOrder] = useState<Order | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'online' | 'talabat' | 'zomato' | 'deliveroo' | 'careem' | 'noon' | 'open bill'>('cash');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'multi' | 'open bill'>('cash');
+  const [multiPayment, setMultiPayment] = useState({ cash: '', card: '' });
   const [amountReceived, setAmountReceived] = useState<string>('');
   const [isSplitBill, setIsSplitBill] = useState(false);
+  const [isSplitByItem, setIsSplitByItem] = useState(false);
+  const [isSplitByAmount, setIsSplitByAmount] = useState(false);
+  const [splitAmount, setSplitAmount] = useState('');
+  const [selectedSplitItems, setSelectedSplitItems] = useState<{ itemId: string, quantity: number, price: number, name: string }[]>([]);
   const [numberOfSplits, setNumberOfSplits] = useState(2);
   const [activeOrderMenu, setActiveOrderMenu] = useState<string | null>(null);
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+
+  // Notification sound for new orders
+  useEffect(() => {
+    const q = query(collection(db, 'orders'), where('status', '==', 'pending'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
+          audio.playbackRate = 0.8;
+          audio.play().catch(e => console.log('Audio play failed:', e));
+        }
+      });
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Modal states
   const [isGuestModalOpen, setIsGuestModalOpen] = useState(false);
@@ -140,15 +162,76 @@ export default function POS({ onClose }: POSProps) {
     return () => clearTimeout(timer);
   }, [user, customerSearch]);
 
-  const printKOT = (order: Order) => {
+  const [printServerUrls, setPrintServerUrls] = useState<string[]>([]);
+  const [systemSettings, setSystemSettings] = useState<any>(null);
+  const [lastOrderTimestamp, setLastOrderTimestamp] = useState<number>(Date.now());
+
+  useEffect(() => {
+    if (!user) return;
+    
+    // Notification sound for new orders
+    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(1));
+    const unsubscribeOrders = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        const newOrder = snapshot.docs[0].data();
+        if (newOrder.createdAt && newOrder.createdAt.toMillis() > lastOrderTimestamp) {
+          // Play notification sound
+          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
+          audio.play().catch(e => console.error("Sound play failed:", e));
+          setLastOrderTimestamp(newOrder.createdAt.toMillis());
+        }
+      }
+    });
+
+    const unsubscribeSettings = onSnapshot(doc(db, 'settings', 'system'), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        setSystemSettings(data);
+        if (data.printServerUrls) {
+          setPrintServerUrls(data.printServerUrls.split(',').map((url: string) => url.trim()).filter(Boolean));
+        }
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/system'));
+
+    return () => {
+      unsubscribeOrders();
+      unsubscribeSettings();
+    };
+  }, [user, lastOrderTimestamp]);
+
+  const printKOT = async (order: Order) => {
+    // If print servers are configured, send to all servers
+    if (printServerUrls.length > 0) {
+      try {
+        await Promise.all(printServerUrls.map(url => 
+          fetch(`${url}/print-kot`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(order)
+          })
+        ));
+        return;
+      } catch (err) {
+        console.error("Print server failed:", err);
+        // Fallback to browser print
+      }
+    }
+
     const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
+    if (!printWindow) {
+      alert("Please allow popups for printing KOT.");
+      return;
+    }
 
     const itemsHtml = order.items.map(item => `
       <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-family: monospace;">
         <span>${item.quantity}x ${item.name}</span>
       </div>
     `).join('');
+
+    const subtotal = order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+    const discountAmount = order.discountType === 'percentage' ? Math.round(subtotal * (order.discount / 100)) : Math.round((order.discount || 0) * 100);
+    const total = order.total;
 
     const html = `
       <html>
@@ -159,6 +242,8 @@ export default function POS({ onClose }: POSProps) {
             .header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; }
             .footer { border-top: 1px dashed #000; padding-top: 10px; margin-top: 10px; text-align: center; font-size: 12px; }
             .item-row { display: flex; justify-content: space-between; margin: 5px 0; }
+            .totals { border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px; }
+            .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin-top: 5px; }
           </style>
         </head>
         <body onload="window.print(); window.close();">
@@ -172,6 +257,17 @@ export default function POS({ onClose }: POSProps) {
           <div class="items">
             ${itemsHtml}
           </div>
+          <div class="totals">
+            <div class="item-row">
+              <span>Subtotal:</span>
+              <span>${formatCurrency(subtotal)}</span>
+            </div>
+            ${order.discount ? `<div class="item-row"><span>Discount:</span><span>-${formatCurrency(discountAmount)}</span></div>` : ''}
+            <div class="total-row">
+              <span>TOTAL:</span>
+              <span>${formatCurrency(total)}</span>
+            </div>
+          </div>
           <div class="footer">
             <p>*** END OF KOT ***</p>
           </div>
@@ -183,7 +279,23 @@ export default function POS({ onClose }: POSProps) {
     printWindow.document.close();
   };
 
-  const printBill = (order: Order) => {
+  const printBill = async (order: Order) => {
+    if (printServerUrls.length > 0) {
+      try {
+        await Promise.all(printServerUrls.map(url => 
+          fetch(`${url}/print-bill`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(order)
+          })
+        ));
+        return;
+      } catch (err) {
+        console.error("Print server failed:", err);
+        // Fallback to browser print
+      }
+    }
+
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
 
@@ -194,6 +306,8 @@ export default function POS({ onClose }: POSProps) {
       </div>
     `).join('');
 
+    const subtotal = order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+    const discountAmount = order.discountType === 'percentage' ? (subtotal * (order.discount / 100)) : (order.discount * 100);
     const html = `
       <html>
         <head>
@@ -219,10 +333,14 @@ export default function POS({ onClose }: POSProps) {
             ${itemsHtml}
           </div>
           <div class="totals">
-            ${order.discount ? `<div class="item-row"><span>Discount:</span><span>-${formatCurrency(order.discount)}</span></div>` : ''}
+            <div class="item-row">
+              <span>Subtotal:</span>
+              <span>${formatCurrency(subtotal)}</span>
+            </div>
+            ${order.discount ? `<div class="item-row"><span>Discount ${order.discountType === 'percentage' ? `(${order.discount}%)` : ''}:</span><span>-${formatCurrency(discountAmount)}</span></div>` : ''}
             <div class="total-row">
               <span>TOTAL:</span>
-              <span>${formatCurrency(order.total - (order.discount || 0))}</span>
+              <span>${formatCurrency(order.total)}</span>
             </div>
           </div>
           <div class="footer">
@@ -269,7 +387,10 @@ export default function POS({ onClose }: POSProps) {
         orderData.createdAt = serverTimestamp();
         await addDoc(collection(db, 'orders'), orderData);
         if (selectedTable) {
-          await updateDoc(doc(db, 'tables', selectedTable.id), { status: 'occupied' });
+          const tableIds = selectedTable.id.split(',');
+          for (const tId of tableIds) {
+            await updateDoc(doc(db, 'tables', tId), { status: 'occupied' });
+          }
         }
       }
       
@@ -287,24 +408,39 @@ export default function POS({ onClose }: POSProps) {
   };
 
   const deductInventory = async (order: Order) => {
+    const soldByPiece = systemSettings?.soldByPiece !== false; // Default to true
     try {
       for (const orderItem of order.items) {
-        const menuItem = menuItems.find(item => item.id === orderItem.itemId);
-        if (menuItem && menuItem.recipe && menuItem.recipe.length > 0) {
-          for (const ingredient of menuItem.recipe) {
-            const invRef = doc(db, 'inventory', ingredient.inventoryItemId);
-            const invDoc = await getDoc(invRef);
-            if (invDoc.exists()) {
+        if (soldByPiece) {
+          const menuItem = menuItems.find(item => item.id === orderItem.itemId);
+          if (menuItem && menuItem.recipe && menuItem.recipe.length > 0) {
+            for (const ingredient of menuItem.recipe) {
+              const invRef = doc(db, 'inventory', ingredient.inventoryItemId);
+              const invDoc = await getDoc(invRef);
+              if (invDoc.exists()) {
+                const currentStock = invDoc.data().stock || 0;
+                const deduction = ingredient.quantity * orderItem.quantity;
+                await updateDoc(invRef, {
+                  stock: Math.max(0, currentStock - deduction),
+                  lastUpdated: serverTimestamp()
+                });
+              }
+            }
+          } else {
+            // Fallback to simple name matching if no recipe exists
+            const q = query(collection(db, 'inventory'), where('name', '==', orderItem.name));
+            const invSnap = await getDocs(q);
+            if (!invSnap.empty) {
+              const invDoc = invSnap.docs[0];
               const currentStock = invDoc.data().stock || 0;
-              const deduction = ingredient.quantity * orderItem.quantity;
-              await updateDoc(invRef, {
-                stock: Math.max(0, currentStock - deduction),
+              await updateDoc(invDoc.ref, {
+                stock: Math.max(0, currentStock - orderItem.quantity),
                 lastUpdated: serverTimestamp()
               });
             }
           }
         } else {
-          // Fallback to simple name matching if no recipe exists
+          // Deduct only the item itself (finished good)
           const q = query(collection(db, 'inventory'), where('name', '==', orderItem.name));
           const invSnap = await getDocs(q);
           if (!invSnap.empty) {
@@ -326,43 +462,223 @@ export default function POS({ onClose }: POSProps) {
     if (!settlingOrder || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const amount = parseFloat(amountReceived) * 100;
-      const change = paymentMethod === 'cash' ? amount - settlingOrder.total : 0;
+      let amountToPay = settlingOrder.total;
+      let itemsToPay = settlingOrder.items;
 
-      await updateDoc(doc(db, 'orders', settlingOrder.id), {
-        status: 'finalized',
-        paymentMethod,
-        amountReceived: amount,
-        changeGiven: change,
-        splitDetails: {
-          isSplit: isSplitBill,
-          numberOfSplits,
-          paidSplits: numberOfSplits
-        }
-      });
-
-      if (settlingOrder.tableId) {
-        await updateDoc(doc(db, 'tables', settlingOrder.tableId), { status: 'available' });
+      if (isSplitByItem) {
+        amountToPay = selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        itemsToPay = selectedSplitItems.map(si => ({
+          itemId: si.itemId,
+          name: si.name,
+          price: si.price,
+          quantity: si.quantity
+        }));
+      } else if (isSplitByAmount) {
+        amountToPay = parseFloat(splitAmount) * 100;
+        itemsToPay = [];
+      } else if (isSplitBill) {
+        amountToPay = Math.round(settlingOrder.total / numberOfSplits);
+        itemsToPay = [];
       }
 
-      // Accounting
-      await addDoc(collection(db, 'journal'), {
-        orderId: settlingOrder.id,
-        type: 'sale',
-        amount: settlingOrder.total,
-        description: `POS Sale - Order #${settlingOrder.id.slice(-6).toUpperCase()} (${paymentMethod})`,
-        timestamp: serverTimestamp(),
-        items: settlingOrder.items
-      });
+      const amount = paymentMethod === 'multi' ? (parseFloat(multiPayment.cash) * 100 || 0) + (parseFloat(multiPayment.card) * 100 || 0) : parseFloat(amountReceived) * 100 || 0;
+      let change = 0;
+      let cashAmount = 0;
+      let cardAmount = 0;
 
-      // Deduct Inventory
-      await deductInventory(settlingOrder);
+      if (paymentMethod === 'multi') {
+        const cashGiven = parseFloat(multiPayment.cash) * 100 || 0;
+        cardAmount = parseFloat(multiPayment.card) * 100 || 0;
+        change = Math.max(0, (cashGiven + cardAmount) - amountToPay);
+        cashAmount = cashGiven - change; // Deduct change from cash
+      } else if (paymentMethod === 'cash') {
+        change = Math.max(0, amount - amountToPay);
+        cashAmount = amountToPay;
+      } else if (paymentMethod === 'card') {
+        cardAmount = amountToPay;
+      }
 
-      setIsSettlingBill(false);
-      setSettlingOrder(null);
+      const journalLines = [
+        ...(cashAmount > 0 ? [{ accountId: 'cash', accountName: 'Cash', debit: cashAmount, credit: 0 }] : []),
+        ...(cardAmount > 0 ? [{ accountId: 'bank', accountName: 'Bank', debit: cardAmount, credit: 0 }] : []),
+        { accountId: 'sales', accountName: 'Sales Revenue', debit: 0, credit: amountToPay }
+      ];
+
+      if (isSplitByItem) {
+        // Partial payment by item
+        const remainingItems = [...settlingOrder.items];
+        selectedSplitItems.forEach(splitItem => {
+          const idx = remainingItems.findIndex(i => i.itemId === splitItem.itemId);
+          if (idx !== -1) {
+            remainingItems[idx].quantity -= splitItem.quantity;
+            if (remainingItems[idx].quantity <= 0) {
+              remainingItems.splice(idx, 1);
+            }
+          }
+        });
+
+        const newTotal = remainingItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        
+        if (remainingItems.length === 0) {
+          // Fully paid
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            status: 'finalized',
+            paymentMethod,
+            amountReceived: amount,
+            changeGiven: change,
+            items: [],
+            total: 0,
+            completedAt: serverTimestamp()
+          });
+          if (settlingOrder.tableId) {
+            const tableIds = settlingOrder.tableId.split(',');
+            for (const tId of tableIds) {
+              await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+            }
+          }
+        } else {
+          // Partially paid
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            items: remainingItems,
+            total: newTotal,
+            notes: (settlingOrder.notes || '') + `\n[Partial Payment: ${formatCurrency(amountToPay)}]`
+          });
+        }
+
+        // Record partial sale in journal
+        await addDoc(collection(db, 'journal'), {
+          orderId: settlingOrder.id,
+          type: 'sale',
+          amount: amountToPay,
+          description: `POS Partial Sale (By Item) - Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          items: itemsToPay
+        });
+
+        // Formal Journal Entry
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `POS-${settlingOrder.id.slice(-4).toUpperCase()}-P`,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: journalLines
+        });
+
+        // Deduct Inventory for paid items
+        await deductInventory({ ...settlingOrder, items: itemsToPay });
+
+        if (remainingItems.length === 0) {
+          setIsSettlingBill(false);
+          setSettlingOrder(null);
+        } else {
+          // Refresh settling order with remaining items
+          setSettlingOrder({ ...settlingOrder, items: remainingItems, total: newTotal });
+          setSelectedSplitItems([]);
+        }
+      } else if (isSplitByAmount || isSplitBill) {
+        const remainingTotal = settlingOrder.total - amountToPay;
+        if (remainingTotal <= 0) {
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            status: 'finalized',
+            paymentMethod,
+            amountReceived: amount,
+            changeGiven: change,
+            total: 0,
+            completedAt: serverTimestamp()
+          });
+          if (settlingOrder.tableId) {
+            const tableIds = settlingOrder.tableId.split(',');
+            for (const tId of tableIds) {
+              await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+            }
+          }
+        } else {
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            total: remainingTotal,
+            notes: (settlingOrder.notes || '') + `\n[Partial Payment: ${formatCurrency(amountToPay)}]`
+          });
+        }
+
+        // Record partial sale in journal
+        await addDoc(collection(db, 'journal'), {
+          orderId: settlingOrder.id,
+          type: 'sale',
+          amount: amountToPay,
+          description: `POS Partial Sale - Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp()
+        });
+
+        // Formal Journal Entry
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `POS-${settlingOrder.id.slice(-4).toUpperCase()}-P`,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: journalLines
+        });
+
+        if (remainingTotal <= 0) {
+          setIsSettlingBill(false);
+          setSettlingOrder(null);
+        } else {
+          setSettlingOrder({ ...settlingOrder, total: remainingTotal });
+        }
+      } else {
+        // Full payment
+        await updateDoc(doc(db, 'orders', settlingOrder.id), {
+          status: 'finalized',
+          paymentMethod,
+          amountReceived: amount,
+          changeGiven: change,
+          completedAt: serverTimestamp()
+        });
+        if (settlingOrder.tableId) {
+          const tableIds = settlingOrder.tableId.split(',');
+          for (const tId of tableIds) {
+            await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+          }
+        }
+        await deductInventory(settlingOrder);
+
+        // Record sale in journal
+        await addDoc(collection(db, 'journal'), {
+          orderId: settlingOrder.id,
+          type: 'sale',
+          amount: settlingOrder.total,
+          description: `POS Sale - Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          items: settlingOrder.items
+        });
+
+        // Formal Journal Entry
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `POS-${settlingOrder.id.slice(-4).toUpperCase()}`,
+          description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: journalLines
+        });
+
+        setIsSettlingBill(false);
+        setSettlingOrder(null);
+      }
+
+      // Print separate bill for this payment
+      printBill({
+        ...settlingOrder,
+        items: itemsToPay.length > 0 ? itemsToPay : [{ name: 'Partial Payment', quantity: 1, price: amountToPay, itemId: 'partial' }],
+        total: amountToPay,
+        isPartial: true
+      } as any);
+
+      setIsSplitBill(false);
+      setIsSplitByItem(false);
+      setIsSplitByAmount(false);
+      setSelectedSplitItems([]);
       setAmountReceived('');
+      setSplitAmount('');
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `orders/${settlingOrder.id}`);
+      handleFirestoreError(err, OperationType.UPDATE, `orders/${settlingOrder?.id}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -389,8 +705,10 @@ export default function POS({ onClose }: POSProps) {
         const orderDoc = await getDoc(doc(db, 'orders', orderId));
         const order = orderDoc.exists() ? { id: orderDoc.id, ...orderDoc.data() } as Order : null;
         if (order && order.tableId) {
-          const tableRef = doc(db, 'tables', order.tableId);
-          await updateDoc(tableRef, { status: 'available' });
+          const tableIds = order.tableId.split(',');
+          for (const tId of tableIds) {
+            await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+          }
         }
       }
     } catch (err) {
@@ -421,9 +739,20 @@ export default function POS({ onClose }: POSProps) {
       return;
     }
     try {
+      const discountVal = parseFloat(discountInput) || 0;
+      const subtotal = activeOrder.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      let finalTotal = subtotal;
+      
+      if (discountTypeInput === 'percentage') {
+        finalTotal = Math.round(subtotal * (1 - discountVal / 100));
+      } else {
+        finalTotal = Math.max(0, subtotal - Math.round(discountVal * 100)); // discountVal is in dollars, subtotal in cents
+      }
+
       await updateDoc(doc(db, 'orders', activeOrder.id), {
-        discount: parseFloat(discountInput) || 0,
-        discountType: discountTypeInput
+        discount: discountVal,
+        discountType: discountTypeInput,
+        total: finalTotal
       });
       setIsDiscountModalOpen(false);
       setActiveOrder(null);
@@ -492,7 +821,10 @@ export default function POS({ onClose }: POSProps) {
 
       // Free up old table if it was dine-in
       if (activeOrder.tableId) {
-        await updateDoc(doc(db, 'tables', activeOrder.tableId), { status: 'available' });
+        const tableIds = activeOrder.tableId.split(',');
+        for (const tId of tableIds) {
+          await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+        }
       }
 
       setIsChangeTableModalOpen(false);
@@ -640,50 +972,95 @@ export default function POS({ onClose }: POSProps) {
               </button>
             </div>
 
-            <div className="flex-1 flex overflow-hidden">
+            <div className="flex-1 flex flex-col overflow-hidden">
               {posStep === 'tables' ? (
-                <div className="flex-1 p-8 relative overflow-auto custom-scrollbar bg-zinc-50 rounded-[2.5rem] m-4 border-2 border-zinc-100 shadow-inner min-h-[600px]">
-                  <div className="absolute inset-0 opacity-5 pointer-events-none" 
-                       style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
-                  
-                  {tables.length === 0 ? (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
-                      <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
-                        <Layout className="text-zinc-300" size={40} />
-                      </div>
-                      <h3 className="text-xl font-bold text-zinc-900">No Tables Configured</h3>
-                      <p className="text-zinc-500 max-w-xs mt-2">Please configure your restaurant layout in the Admin Panel's Tables section first.</p>
+                <div className="flex-1 flex flex-col p-8 bg-zinc-50 m-4 rounded-[2.5rem] border-2 border-zinc-100 shadow-inner">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xl font-black text-zinc-900">Select Table</h3>
+                    <div className="flex items-center gap-4">
+                      {isMergingTables && selectedTablesToMerge.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const mergedTable: Table = {
+                              id: selectedTablesToMerge.map(t => t.id).join(','),
+                              name: selectedTablesToMerge.map(t => t.name).join(' + '),
+                              capacity: selectedTablesToMerge.reduce((sum, t) => sum + t.capacity, 0),
+                              status: 'available',
+                              x: 0, y: 0, width: 0, height: 0, shape: 'rectangle'
+                            };
+                            setSelectedTable(mergedTable);
+                            setPosStep('menu');
+                            setIsMergingTables(false);
+                            setSelectedTablesToMerge([]);
+                          }}
+                          className="px-6 py-2 bg-primary text-white font-bold rounded-xl hover:bg-primary/90 transition-colors"
+                        >
+                          Confirm Merge ({selectedTablesToMerge.length})
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setIsMergingTables(!isMergingTables);
+                          setSelectedTablesToMerge([]);
+                        }}
+                        className={`px-4 py-2 rounded-xl font-bold transition-colors ${
+                          isMergingTables ? 'bg-amber-100 text-amber-700' : 'bg-white border-2 border-zinc-200 text-zinc-600 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isMergingTables ? 'Cancel Merge' : 'Merge Tables'}
+                      </button>
                     </div>
-                  ) : tables.map(table => (
-                    <button
-                      key={table.id}
-                      disabled={table.status === 'occupied'}
-                      onClick={() => {
-                        setSelectedTable(table);
-                        setPosStep('menu');
-                      }}
-                      className={`absolute flex flex-col items-center justify-center transition-all shadow-lg select-none ${
-                        table.shape === 'circle' ? 'rounded-full' : 'rounded-2xl'
-                      } ${
-                        table.status === 'occupied' 
-                          ? 'bg-amber-500 border-amber-600 opacity-80 cursor-not-allowed' 
-                          : 'bg-white border-zinc-100 hover:border-primary/30 hover:shadow-xl hover:scale-105'
-                      }`}
-                      style={{
-                        left: `${table.x}px`,
-                        top: `${table.y}px`,
-                        width: `${table.width}px`,
-                        height: `${table.height}px`,
-                      }}
-                    >
-                      <span className={`font-black text-sm ${table.status === 'occupied' ? 'text-white' : 'text-zinc-900'}`}>
-                        {table.name}
-                      </span>
-                      <span className={`text-[10px] font-bold ${table.status === 'occupied' ? 'text-white/80' : 'text-zinc-400'}`}>
-                        Cap: {table.capacity}
-                      </span>
-                    </button>
-                  ))}
+                  </div>
+                  
+                  <div className="flex-1 overflow-auto custom-scrollbar">
+                    {tables.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center text-center h-full">
+                        <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
+                          <Layout className="text-zinc-300" size={40} />
+                        </div>
+                        <h3 className="text-xl font-bold text-zinc-900">No Tables Configured</h3>
+                        <p className="text-zinc-500 max-w-xs mt-2">Please configure your restaurant layout in the Admin Panel's Tables section first.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                        {tables.map(table => {
+                          const isSelectedForMerge = selectedTablesToMerge.some(t => t.id === table.id);
+                          return (
+                            <button
+                              key={table.id}
+                              disabled={table.status === 'occupied'}
+                              onClick={() => {
+                                if (isMergingTables) {
+                                  if (isSelectedForMerge) {
+                                    setSelectedTablesToMerge(selectedTablesToMerge.filter(t => t.id !== table.id));
+                                  } else {
+                                    setSelectedTablesToMerge([...selectedTablesToMerge, table]);
+                                  }
+                                } else {
+                                  setSelectedTable(table);
+                                  setPosStep('menu');
+                                }
+                              }}
+                              className={`aspect-square flex flex-col items-center justify-center transition-all shadow-sm select-none rounded-2xl border-2 ${
+                                table.status === 'occupied' 
+                                  ? 'bg-amber-50 border-amber-200 opacity-60 cursor-not-allowed' 
+                                  : isSelectedForMerge
+                                    ? 'bg-primary/10 border-primary shadow-md scale-105'
+                                    : 'bg-white border-zinc-100 hover:border-primary/30 hover:shadow-md'
+                              }`}
+                            >
+                              <span className={`font-black text-lg ${table.status === 'occupied' ? 'text-amber-700' : isSelectedForMerge ? 'text-primary' : 'text-zinc-900'}`}>
+                                {table.name}
+                              </span>
+                              <span className={`text-xs font-bold mt-1 ${table.status === 'occupied' ? 'text-amber-600/80' : isSelectedForMerge ? 'text-primary/80' : 'text-zinc-400'}`}>
+                                Cap: {table.capacity}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <>
@@ -711,7 +1088,7 @@ export default function POS({ onClose }: POSProps) {
                       ))}
                     </div>
                     <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 h-full">
                         {menuItems
                           .filter(item => selectedCategory === 'all' || item.category === selectedCategory)
                           .map(item => (
@@ -862,7 +1239,7 @@ export default function POS({ onClose }: POSProps) {
               {/* Payment Method Selection */}
               <div className="space-y-4">
                 <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Payment Method</p>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-4 gap-4">
                   <button
                     onClick={() => setPaymentMethod('cash')}
                     className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
@@ -882,6 +1259,15 @@ export default function POS({ onClose }: POSProps) {
                     <span className="font-black uppercase text-xs">Card</span>
                   </button>
                   <button
+                    onClick={() => setPaymentMethod('multi')}
+                    className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
+                      paymentMethod === 'multi' ? 'bg-purple-50 border-purple-500 text-purple-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-zinc-200'
+                    }`}
+                  >
+                    <Split size={32} />
+                    <span className="font-black uppercase text-xs">Multi</span>
+                  </button>
+                  <button
                     onClick={() => setPaymentMethod('open bill')}
                     className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
                       paymentMethod === 'open bill' ? 'bg-amber-50 border-amber-500 text-amber-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-zinc-200'
@@ -894,31 +1280,137 @@ export default function POS({ onClose }: POSProps) {
               </div>
 
               {/* Split Bill Option */}
-              <div className="flex items-center justify-between p-6 bg-zinc-50 rounded-3xl">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm">
-                    <Split className="text-primary" size={24} />
-                  </div>
-                  <div>
-                    <p className="font-black text-zinc-900 uppercase text-xs">Split Bill</p>
-                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Divide total among guests</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  {isSplitBill && (
-                    <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl border border-zinc-200">
-                      <button onClick={() => setNumberOfSplits(Math.max(2, numberOfSplits - 1))} className="text-zinc-400 hover:text-primary">-</button>
-                      <span className="font-black text-sm">{numberOfSplits}</span>
-                      <button onClick={() => setNumberOfSplits(numberOfSplits + 1)} className="text-zinc-400 hover:text-primary">+</button>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-6 bg-zinc-50 rounded-3xl">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm">
+                      <Split className="text-primary" size={24} />
                     </div>
-                  )}
-                  <button 
-                    onClick={() => setIsSplitBill(!isSplitBill)}
-                    className={`w-14 h-8 rounded-full transition-all relative ${isSplitBill ? 'bg-primary' : 'bg-zinc-300'}`}
-                  >
-                    <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${isSplitBill ? 'left-7' : 'left-1'}`} />
-                  </button>
+                    <div>
+                      <p className="font-black text-zinc-900 uppercase text-xs">Split Bill</p>
+                      <p className="text-[10px] font-bold text-zinc-400 uppercase">Divide total among guests</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    {isSplitBill && !isSplitByItem && (
+                      <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl border border-zinc-200">
+                        <button onClick={() => setNumberOfSplits(Math.max(2, numberOfSplits - 1))} className="text-zinc-400 hover:text-primary">-</button>
+                        <span className="font-black text-sm">{numberOfSplits}</span>
+                        <button onClick={() => setNumberOfSplits(numberOfSplits + 1)} className="text-zinc-400 hover:text-primary">+</button>
+                      </div>
+                    )}
+                    <button 
+                      onClick={() => {
+                        setIsSplitBill(!isSplitBill);
+                        if (isSplitBill) {
+                          setIsSplitByItem(false);
+                          setSelectedSplitItems([]);
+                        }
+                      }}
+                      className={`w-14 h-8 rounded-full transition-all relative ${isSplitBill ? 'bg-primary' : 'bg-zinc-300'}`}
+                    >
+                      <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${isSplitBill ? 'left-7' : 'left-1'}`} />
+                    </button>
+                  </div>
                 </div>
+
+                {isSplitBill && (
+                  <div className="flex gap-2 p-1 bg-zinc-100 rounded-2xl">
+                    <button 
+                      onClick={() => { setIsSplitByItem(false); setIsSplitByAmount(false); setSelectedSplitItems([]); }}
+                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(!isSplitByItem && !isSplitByAmount) ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'}`}
+                    >
+                      Equal Split
+                    </button>
+                    <button 
+                      onClick={() => { setIsSplitByItem(false); setIsSplitByAmount(true); setSelectedSplitItems([]); }}
+                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isSplitByAmount ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'}`}
+                    >
+                      By Amount
+                    </button>
+                    <button 
+                      onClick={() => { setIsSplitByItem(true); setIsSplitByAmount(false); }}
+                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isSplitByItem ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'}`}
+                    >
+                      By Item
+                    </button>
+                  </div>
+                )}
+
+                {isSplitBill && isSplitByAmount && (
+                  <div className="space-y-3 p-6 bg-zinc-50 rounded-3xl">
+                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Amount to Pay Now</label>
+                    <div className="relative">
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <input
+                        type="number"
+                        value={splitAmount}
+                        onChange={(e) => setSplitAmount(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full bg-white border-2 border-zinc-100 rounded-2xl pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                      />
+                    </div>
+                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Remaining: {formatCurrency(settlingOrder.total - (parseFloat(splitAmount) * 100 || 0))}</p>
+                  </div>
+                )}
+
+                {isSplitBill && isSplitByItem && (
+                  <div className="space-y-3 p-6 bg-zinc-50 rounded-3xl">
+                    <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Select Items to Pay</p>
+                    <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                      {settlingOrder.items.map((item, idx) => {
+                        const selected = selectedSplitItems.find(si => si.itemId === item.itemId);
+                        const selectedQty = selected?.quantity || 0;
+                        
+                        return (
+                          <div key={idx} className="flex items-center justify-between p-3 bg-white rounded-2xl border border-zinc-100">
+                            <div className="flex-1">
+                              <p className="text-sm font-bold text-zinc-900">{item.name}</p>
+                              <p className="text-[10px] font-bold text-zinc-400">{formatCurrency(item.price)} each</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <button 
+                                onClick={() => {
+                                  const newSelected = [...selectedSplitItems];
+                                  const sIdx = newSelected.findIndex(si => si.itemId === item.itemId);
+                                  if (sIdx !== -1) {
+                                    if (newSelected[sIdx].quantity > 1) {
+                                      newSelected[sIdx].quantity--;
+                                    } else {
+                                      newSelected.splice(sIdx, 1);
+                                    }
+                                  }
+                                  setSelectedSplitItems(newSelected);
+                                }}
+                                className="w-8 h-8 flex items-center justify-center bg-zinc-100 text-zinc-400 rounded-lg hover:bg-zinc-200"
+                              >
+                                -
+                              </button>
+                              <span className="w-8 text-center font-black text-sm">{selectedQty} / {item.quantity}</span>
+                              <button 
+                                onClick={() => {
+                                  const newSelected = [...selectedSplitItems];
+                                  const sIdx = newSelected.findIndex(si => si.itemId === item.itemId);
+                                  if (sIdx !== -1) {
+                                    if (newSelected[sIdx].quantity < item.quantity) {
+                                      newSelected[sIdx].quantity++;
+                                    }
+                                  } else {
+                                    newSelected.push({ itemId: item.itemId, name: item.name, price: item.price, quantity: 1 });
+                                  }
+                                  setSelectedSplitItems(newSelected);
+                                }}
+                                className="w-8 h-8 flex items-center justify-center bg-primary/10 text-primary rounded-lg hover:bg-primary/20"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Cash Calculation */}
@@ -941,7 +1433,47 @@ export default function POS({ onClose }: POSProps) {
                     <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Change to Return</label>
                     <div className="bg-emerald-50 border-2 border-emerald-100 rounded-[1.5rem] px-6 py-4">
                       <p className="text-2xl font-black text-emerald-600">
-                        {amountReceived ? formatCurrency(Math.max(0, parseFloat(amountReceived) * 100 - settlingOrder.total)) : formatCurrency(0)}
+                        {amountReceived ? formatCurrency(Math.max(0, parseFloat(amountReceived) * 100 - (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 || 0 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total))) : formatCurrency(0)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Multi Payment Inputs */}
+              {paymentMethod === 'multi' && (
+                <div className="grid grid-cols-2 gap-8">
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Cash Received</label>
+                    <div className="relative">
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <input
+                        type="number"
+                        value={multiPayment.cash}
+                        onChange={(e) => setMultiPayment({ ...multiPayment, cash: e.target.value })}
+                        placeholder="0.00"
+                        className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Card Amount</label>
+                    <div className="relative">
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <input
+                        type="number"
+                        value={multiPayment.card}
+                        onChange={(e) => setMultiPayment({ ...multiPayment, card: e.target.value })}
+                        placeholder="0.00"
+                        className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                      />
+                    </div>
+                  </div>
+                  <div className="col-span-2 space-y-3">
+                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Change to Return</label>
+                    <div className="bg-emerald-50 border-2 border-emerald-100 rounded-[1.5rem] px-6 py-4">
+                      <p className="text-2xl font-black text-emerald-600">
+                        {formatCurrency(Math.max(0, ((parseFloat(multiPayment.cash) || 0) + (parseFloat(multiPayment.card) || 0)) * 100 - (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 || 0 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total)))}
                       </p>
                     </div>
                   </div>
@@ -953,13 +1485,27 @@ export default function POS({ onClose }: POSProps) {
                 <div>
                   <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Total to Pay</p>
                   <p className="text-4xl font-black text-primary">
-                    {isSplitBill ? formatCurrency(settlingOrder.total / numberOfSplits) : formatCurrency(settlingOrder.total)}
-                    {isSplitBill && <span className="text-sm text-zinc-400 ml-2 font-bold">per person</span>}
+                    {isSplitByItem 
+                      ? formatCurrency(selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0))
+                      : isSplitByAmount
+                        ? formatCurrency(parseFloat(splitAmount) * 100 || 0)
+                        : isSplitBill 
+                          ? formatCurrency(settlingOrder.total / numberOfSplits) 
+                          : formatCurrency(settlingOrder.total)}
+                    {isSplitBill && !isSplitByItem && !isSplitByAmount && <span className="text-sm text-zinc-400 ml-2 font-bold">per person</span>}
+                    {isSplitByItem && <span className="text-sm text-zinc-400 ml-2 font-bold">selected items</span>}
+                    {isSplitByAmount && <span className="text-sm text-zinc-400 ml-2 font-bold">custom amount</span>}
                   </p>
                 </div>
                 <div className="flex gap-4">
                   <button
-                    onClick={() => printBill(settlingOrder)}
+                    onClick={() => {
+                      if (isSplitByItem && selectedSplitItems.length > 0) {
+                        printBill({ ...settlingOrder, items: selectedSplitItems, total: selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) });
+                      } else {
+                        printBill(settlingOrder);
+                      }
+                    }}
                     className="bg-zinc-100 text-zinc-900 px-8 py-5 rounded-[2rem] font-black uppercase tracking-widest hover:bg-zinc-200 transition-all flex items-center justify-center gap-3"
                   >
                     <Printer size={20} />
@@ -967,7 +1513,12 @@ export default function POS({ onClose }: POSProps) {
                   </button>
                   <button
                     onClick={settleBill}
-                    disabled={(paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < settlingOrder.total)) || isSubmitting}
+                    disabled={
+                      (isSplitByItem && selectedSplitItems.length === 0) ||
+                      (isSplitByAmount && (!splitAmount || parseFloat(splitAmount) <= 0)) ||
+                      (paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total))) || 
+                      isSubmitting
+                    }
                     className="bg-zinc-900 text-white px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl shadow-black/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
                   >
                     {isSubmitting ? (
@@ -1022,7 +1573,20 @@ export default function POS({ onClose }: POSProps) {
                 {openDropdownId === order.id && (
                   <div className="bg-zinc-50 border-b border-zinc-100 grid grid-cols-2 gap-1 p-2">
                     {[
-                      { icon: User, label: 'Guest', onClick: () => { setActiveOrder(order); setOccupancyInput(order.occupancy?.toString() || ''); setIsGuestModalOpen(true); setOpenDropdownId(null); } },
+                      { icon: User, label: 'Covers', onClick: () => { setActiveOrder(order); setOccupancyInput(order.occupancy?.toString() || ''); setIsGuestModalOpen(true); setOpenDropdownId(null); } },
+                      { icon: Users, label: 'Guest', onClick: async () => { 
+                        try {
+                          await updateDoc(doc(db, 'orders', order.id), {
+                            customerId: 'guest',
+                            customerName: 'Guest Customer',
+                            customerPhone: 'N/A',
+                            occupancy: 1 // Default to 1 guest if unassigned
+                          });
+                          setOpenDropdownId(null);
+                        } catch (err) {
+                          handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
+                        }
+                      } },
                       { icon: Calendar, label: 'Type', onClick: () => { setActiveOrder(order); setOrderTypeInput(order.orderType); setIsUpdateOrderModalOpen(true); setOpenDropdownId(null); } },
                       { icon: Tag, label: 'Discount', onClick: () => { setActiveOrder(order); setDiscountInput(order.discount?.toString() || ''); setIsDiscountModalOpen(true); setOpenDropdownId(null); } },
                       { icon: Users, label: 'Customer', onClick: () => { setActiveOrder(order); setIsCustomerModalOpen(true); setOpenDropdownId(null); } },
@@ -1093,16 +1657,31 @@ export default function POS({ onClose }: POSProps) {
 
                 {/* Totals */}
                 <div className="p-4 bg-white border-t border-zinc-100">
-                  <div className="flex justify-between items-center mb-2">
+                  {order.discount && order.discount > 0 ? (
+                    <>
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase">Subtotal</span>
+                        <span className="text-sm font-bold text-zinc-600">
+                          {formatCurrency(order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0))}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase">
+                          Discount {order.discountType === 'percentage' ? `(${order.discount}%)` : ''}
+                        </span>
+                        <span className="text-sm font-black text-red-500">
+                          -{formatCurrency(order.discountType === 'percentage' 
+                            ? Math.round(order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0) * (order.discount / 100))
+                            : Math.round(order.discount * 100)
+                          )}
+                        </span>
+                      </div>
+                    </>
+                  ) : null}
+                  <div className="flex justify-between items-center">
                     <span className="text-xs font-bold text-zinc-500 uppercase">Total</span>
                     <span className="text-lg font-black text-emerald-600">{formatCurrency(order.total)}</span>
                   </div>
-                  {order.discount && order.discount > 0 ? (
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-bold text-zinc-500 uppercase">Discount</span>
-                      <span className="text-sm font-black text-red-500">-{formatCurrency(order.discount)}</span>
-                    </div>
-                  ) : null}
                 </div>
 
                 {/* Footer Buttons */}
@@ -1155,11 +1734,11 @@ export default function POS({ onClose }: POSProps) {
         )}
       </div>
 
-      {/* Guest Modal */}
+      {/* Guest Modal (Covers) */}
       {isGuestModalOpen && activeOrder && (
         <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-xl font-black">Number of Guests</h3>
+            <h3 className="text-xl font-black">Number of Covers</h3>
             <input
               type="number"
               value={occupancyInput}
@@ -1418,11 +1997,14 @@ export default function POS({ onClose }: POSProps) {
                   <div className="w-72 bg-zinc-50 p-6 rounded-2xl border border-zinc-200 space-y-3">
                     <div className="flex justify-between items-center text-sm font-bold text-zinc-500">
                       <span>Subtotal</span>
-                      <span>{formatCurrency(activeOrder.total + (activeOrder.discountType === 'percentage' ? (activeOrder.total / (1 - activeOrder.discount / 100)) - activeOrder.total : activeOrder.discount))}</span>
+                      <span>{formatCurrency(activeOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0))}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm font-bold text-red-500">
                       <span>Discount {activeOrder.discountType === 'percentage' ? `(${activeOrder.discount}%)` : ''}</span>
-                      <span>-{formatCurrency(activeOrder.discountType === 'percentage' ? (activeOrder.total / (1 - activeOrder.discount / 100)) * (activeOrder.discount / 100) : activeOrder.discount)}</span>
+                      <span>-{formatCurrency(activeOrder.discountType === 'percentage' 
+                        ? Math.round(activeOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0) * (activeOrder.discount / 100))
+                        : Math.round(activeOrder.discount * 100)
+                      )}</span>
                     </div>
                     <div className="pt-3 border-t border-zinc-200 flex justify-between items-center">
                       <span className="font-black text-zinc-900 uppercase tracking-widest">Total</span>

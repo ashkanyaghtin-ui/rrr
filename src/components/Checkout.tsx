@@ -102,11 +102,11 @@ export default function Checkout({ amount, cartItems, onSuccess, onClose }: Chec
 
   if (step === 'auth' && !user) {
     return (
-      <div className="bg-white rounded-3xl p-8 shadow-xl border border-zinc-100 relative">
-        <button onClick={onClose} className="absolute top-4 right-4 p-2 hover:bg-zinc-100 rounded-full text-zinc-400">
+      <div className="bg-card rounded-3xl p-8 shadow-xl border border-border relative">
+        <button onClick={onClose} className="absolute top-4 right-4 p-2 hover:bg-muted rounded-full text-muted-foreground">
           <X size={20} />
         </button>
-        <h2 className="text-2xl font-bold mb-6">Checkout</h2>
+        <h2 className="text-2xl font-bold mb-6 text-foreground">Checkout</h2>
         <div className="space-y-4">
           <button
             onClick={login}
@@ -116,13 +116,13 @@ export default function Checkout({ amount, cartItems, onSuccess, onClose }: Chec
             Sign In to Save Address
           </button>
           <div className="relative flex items-center py-2">
-            <div className="flex-grow border-t border-zinc-200"></div>
-            <span className="flex-shrink mx-4 text-zinc-400 text-sm">or</span>
-            <div className="flex-grow border-t border-zinc-200"></div>
+            <div className="flex-grow border-t border-border"></div>
+            <span className="flex-shrink mx-4 text-muted-foreground text-sm">or</span>
+            <div className="flex-grow border-t border-border"></div>
           </div>
           <button
             onClick={() => setStep('type')}
-            className="w-full bg-zinc-100 text-zinc-900 py-4 rounded-2xl font-bold hover:bg-zinc-200 transition-all"
+            className="w-full bg-muted text-foreground py-4 rounded-2xl font-bold hover:bg-muted/80 transition-all"
           >
             Continue as Guest
           </button>
@@ -133,21 +133,21 @@ export default function Checkout({ amount, cartItems, onSuccess, onClose }: Chec
 
   if (step === 'type' || (step === 'auth' && user)) {
     return (
-      <div className="bg-white rounded-3xl p-8 shadow-xl border border-zinc-100 relative">
-        <button onClick={onClose} className="absolute top-4 right-4 p-2 hover:bg-zinc-100 rounded-full text-zinc-400">
+      <div className="bg-card rounded-3xl p-8 shadow-xl border border-border relative">
+        <button onClick={onClose} className="absolute top-4 right-4 p-2 hover:bg-muted rounded-full text-muted-foreground">
           <X size={20} />
         </button>
-        <h2 className="text-2xl font-bold mb-6">Order Type</h2>
+        <h2 className="text-2xl font-bold mb-6 text-foreground">Order Type</h2>
         <div className="space-y-4">
           <button
             onClick={() => {
               setOrderType('delivery');
               setStep('address');
             }}
-            className="w-full flex items-center justify-between p-6 rounded-2xl border-2 border-zinc-100 hover:border-primary hover:bg-primary/5 transition-all text-left"
+            className="w-full flex items-center justify-between p-6 rounded-2xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-all text-left"
           >
             <div>
-              <h3 className="font-bold text-lg text-zinc-900">Delivery</h3>
+              <h3 className="font-bold text-lg text-foreground">Delivery</h3>
               <p className="text-sm text-zinc-500">We'll deliver to your address</p>
             </div>
             <Home className="text-zinc-400" size={24} />

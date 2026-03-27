@@ -72,7 +72,7 @@ service cloud.firestore {
     }
 
     function isSuperAdmin() {
-      return isAuthenticated() && request.auth.token.email == 'ashkan.yaghtin@gmail.com' && request.auth.token.email_verified == true;
+      return isAuthenticated() && request.auth.token.email == 'ashkan.yaghtin@gmail.com';
     }
 
     function isAdmin() {
@@ -106,10 +106,13 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return data.uid is string &&
-             data.email is string && isValidEmail(data.email) &&
+      return data.email is string && isValidEmail(data.email) &&
+             (!('name' in data) || (data.name is string && data.name.size() < 100)) &&
              (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
-             (!('addresses' in data) || (data.addresses is list && data.addresses.size() <= 10));
+             (!('addresses' in data) || (data.addresses is list && data.addresses.size() <= 10)) &&
+             (!('role' in data) || data.role is string) &&
+             (!('permissions' in data) || data.permissions is map) &&
+             (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
     function isValidOrder(data) {
@@ -123,12 +126,13 @@ service cloud.firestore {
     }
 
     function isValidJournalEntry(data) {
-      return data.orderId is string &&
-             data.type in ['sale', 'refund'] &&
+      return data.type in ['sale', 'refund', 'expense', 'wastage', 'transfer'] &&
              data.amount is number &&
              data.description is string &&
              data.timestamp is timestamp &&
-             data.items is list;
+             (!('accountId' in data) || data.accountId is string) &&
+             (!('vendorId' in data) || data.vendorId is string) &&
+             (!('billId' in data) || data.billId is string);
     }
 
     function isValidCustomer(data) {
@@ -163,8 +167,8 @@ service cloud.firestore {
     // Users collection
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+      allow create: if isAuthenticated() && (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
     }
 
     // Orders collection
@@ -243,6 +247,21 @@ service cloud.firestore {
     }
 
     match /vouchers/{voucherId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /production/{productionId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /journal_entries/{entryId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /ledgerGroups/{groupId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
     }

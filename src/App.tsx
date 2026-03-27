@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
 import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, getDocs, deleteDoc, doc, where } from 'firebase/firestore';
 import { useAuth } from './contexts/AuthContext';
@@ -71,8 +71,8 @@ function UserApp({ items, categories, tenantId }: { items: MenuItem[], categorie
   const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
   return (
-    <div className="min-h-screen bg-background font-sans text-zinc-900">
-      <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-zinc-100">
+    <div className="min-h-screen bg-background font-sans text-foreground">
+      <nav className="sticky top-0 z-50 bg-background/90 backdrop-blur-md border-b border-border">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4 font-bold text-xl text-primary">
             <span className="hidden sm:inline">Rivas Restaurant</span>
@@ -225,16 +225,16 @@ function UserApp({ items, categories, tenantId }: { items: MenuItem[], categorie
       )}
       
       {/* Admin Link - More visible for easier access */}
-      <footer className="py-12 border-t border-zinc-100 text-center bg-zinc-50/50">
+      <footer className="py-12 border-t border-border text-center bg-muted/50">
         <div className="max-w-5xl mx-auto px-4">
           <button 
             onClick={() => navigate('/admin')}
-            className="inline-flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 px-6 py-3 rounded-2xl hover:bg-primary hover:text-white hover:border-primary transition-all text-sm font-bold shadow-sm hover:shadow-lg hover:-translate-y-1"
+            className="inline-flex items-center gap-2 bg-card border border-border text-muted-foreground px-6 py-3 rounded-2xl hover:bg-primary hover:text-white hover:border-primary transition-all text-sm font-bold shadow-sm hover:shadow-lg hover:-translate-y-1"
           >
             <ShieldCheck size={18} />
             Administrative Access
           </button>
-          <p className="mt-4 text-zinc-400 text-xs font-medium">© 2026 Rivas Restaurant Management System</p>
+          <p className="mt-4 text-muted-foreground text-xs font-medium">© 2026 Rivas Restaurant Management System</p>
         </div>
       </footer>
 
@@ -264,6 +264,7 @@ function UserApp({ items, categories, tenantId }: { items: MenuItem[], categorie
 export default function App() {
   const { user, profile, loading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [items, setItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(() => {
@@ -301,6 +302,28 @@ export default function App() {
       unsubscribeCats();
     };
   }, []);
+
+  useEffect(() => {
+    const unsubscribeSettings = onSnapshot(doc(db, 'settings', 'system'), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        if (data.theme) {
+          const root = document.documentElement;
+          if (data.theme.primaryColor) root.style.setProperty('--color-primary', data.theme.primaryColor);
+          if (data.theme.secondaryColor) root.style.setProperty('--color-secondary', data.theme.secondaryColor);
+          if (data.theme.accentColor) root.style.setProperty('--color-accent', data.theme.accentColor);
+          
+          if (data.theme.darkMode) {
+            root.classList.add('dark');
+          } else {
+            root.classList.remove('dark');
+          }
+        }
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/system'));
+
+    return () => unsubscribeSettings();
+  }, [location.pathname]);
 
   const [globalStats, setGlobalStats] = useState({ revenue: 0, orders: 0, users: 0 });
 

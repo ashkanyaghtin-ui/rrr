@@ -37,25 +37,25 @@ export default function Cart({ items, onUpdateQuantity, onRemove, onClose, onChe
         animate={{ x: 0 }}
         exit={{ x: '100%' }}
         transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-        className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col"
+        className="relative w-full max-w-md bg-card h-full shadow-2xl flex flex-col"
       >
-        <div className="p-6 border-b border-zinc-100 flex justify-between items-center">
-          <h2 className="text-xl font-bold">Your Order</h2>
-          <button onClick={onClose} className="p-2 hover:bg-zinc-100 rounded-full transition-colors">
+        <div className="p-6 border-b border-border flex justify-between items-center">
+          <h2 className="text-xl font-bold text-foreground">Your Order</h2>
+          <button onClick={onClose} className="p-2 hover:bg-muted rounded-full transition-colors text-foreground">
             <X size={20} />
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {items.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-zinc-400">
+            <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
               <ShoppingBag size={48} className="mb-4 opacity-20" />
               <p>Your cart is empty</p>
             </div>
           ) : (
             items.map(item => (
               <div key={item.id} className="flex gap-4">
-                <div className="w-20 h-20 rounded-xl overflow-hidden bg-zinc-100 flex-shrink-0">
+                <div className="w-20 h-20 rounded-xl overflow-hidden bg-muted flex-shrink-0">
                   {getImageUrl(item.image) && (
                     <img 
                       src={getImageUrl(item.image)} 
@@ -67,29 +67,29 @@ export default function Cart({ items, onUpdateQuantity, onRemove, onClose, onChe
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-start mb-1">
-                    <h4 className="font-medium text-zinc-900 truncate">{item.name}</h4>
-                    <button onClick={() => onRemove(item.id)} className="text-zinc-400 hover:text-red-500 transition-colors">
+                    <h4 className="font-medium text-foreground truncate">{item.name}</h4>
+                    <button onClick={() => onRemove(item.id)} className="text-muted-foreground hover:text-red-500 transition-colors">
                       <Trash2 size={16} />
                     </button>
                   </div>
-                  <p className="text-sm text-zinc-500 mb-3">{formatCurrency(item.price)}</p>
+                  <p className="text-sm text-muted-foreground mb-3">{formatCurrency(item.price)}</p>
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center border border-zinc-200 rounded-lg">
+                    <div className="flex items-center border border-border rounded-lg">
                       <button 
                         onClick={() => onUpdateQuantity(item.id, -1)}
-                        className="p-1 hover:bg-zinc-50 transition-colors"
+                        className="p-1 hover:bg-muted transition-colors text-foreground"
                       >
                         <Minus size={14} />
                       </button>
-                      <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
+                      <span className="w-8 text-center text-sm font-medium text-foreground">{item.quantity}</span>
                       <button 
                         onClick={() => onUpdateQuantity(item.id, 1)}
-                        className="p-1 hover:bg-zinc-50 transition-colors"
+                        className="p-1 hover:bg-muted transition-colors text-foreground"
                       >
                         <Plus size={14} />
                       </button>
                     </div>
-                    <span className="text-sm font-semibold ml-auto">
+                    <span className="text-sm font-semibold ml-auto text-foreground">
                       {formatCurrency(item.price * item.quantity)}
                     </span>
                   </div>
@@ -100,10 +100,10 @@ export default function Cart({ items, onUpdateQuantity, onRemove, onClose, onChe
         </div>
 
         {items.length > 0 && (
-          <div className="p-6 border-t border-zinc-100 bg-zinc-50/50">
+          <div className="p-6 border-t border-border bg-muted/50">
             <div className="flex justify-between items-center mb-6">
-              <span className="text-zinc-500">Subtotal</span>
-              <span className="text-2xl font-bold">{formatCurrency(subtotal)}</span>
+              <span className="text-muted-foreground">Subtotal</span>
+              <span className="text-2xl font-bold text-foreground">{formatCurrency(subtotal)}</span>
             </div>
             <button 
               onClick={onCheckout}

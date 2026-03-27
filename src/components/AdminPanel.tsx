@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError, secondaryAuth } from '../firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp, where, getDocs, setDoc } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp, where, getDocs, setDoc, limit, getDoc } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { MenuItem, Category, InventoryItem, JournalEntry, Order } from '../types';
-import { Plus, Edit2, Trash2, Eye, EyeOff, Save, X, ShoppingBag, LayoutGrid, CheckCircle2, Clock, Ban, ShieldCheck, Monitor, Package, ChefHat, Truck, FileText, BarChart3, Boxes, History, Utensils, Printer, Move, Search, Filter, Calendar, Phone, MapPin, User, Hash, ChevronDown, RotateCcw, Users, BookOpen, Building, Warehouse, Settings, Menu as MenuIcon, Upload, Download, FileSpreadsheet, ChevronRight, CreditCard, Wallet, ArrowRightLeft, Receipt, Percent, TrendingUp, UserPlus } from 'lucide-react';
+import { MenuItem, Category, InventoryItem, Journal, Order, LedgerGroup } from '../types';
+import { Plus, Edit2, Trash2, Eye, EyeOff, Save, X, ShoppingBag, LayoutGrid, CheckCircle2, Clock, Ban, ShieldCheck, Monitor, Package, ChefHat, Truck, FileText, BarChart3, Boxes, History, Utensils, Printer, Move, Search, Filter, Calendar, Phone, MapPin, User, Hash, ChevronDown, ChevronUp, RotateCcw, Users, BookOpen, Building, Warehouse, Settings, Menu as MenuIcon, Upload, Download, FileSpreadsheet, ChevronRight, CreditCard, Wallet, ArrowRightLeft, Receipt, Percent, TrendingUp, UserPlus, Scale, Book, Grid, UserCheck, PieChart as PieChartIcon } from 'lucide-react';
 import TableDesigner from './TableDesigner';
+import AccountingReportsIFRS from './AccountingReportsIFRS';
 import CRM from './CRM';
 import RecipeManager from './RecipeManager';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,7 +13,7 @@ import { formatCurrency } from '../utils/format';
 import { exportToExcel } from '../utils/excel';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { LedgerGroup } from '../types';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 interface AdminPanelProps {
   items: MenuItem[];
@@ -25,41 +26,120 @@ interface AdminPanelProps {
 export default function AdminPanel({ items, categories, onClose, onLogout, onOpenPOS }: AdminPanelProps) {
   const { user, profile } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers'>('orders');
-  const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'vouchers' | 'bills' | 'banking' | 'taxes' | 'reports'>('dashboard');
-  const [isMenuOpen, setIsMenuOpen] = useState(true);
-  const [isManageTreeOpen, setIsManageTreeOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production'>('orders');
+  const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'journal' | 'vouchers' | 'bills' | 'banking' | 'taxes' | 'reports'>('dashboard');
+  const [accountingDateRange, setAccountingDateRange] = useState({ start: '', end: '' });
+  const [accountingSearch, setAccountingSearch] = useState('');
+  const [journalEntries, setJournalEntries] = useState<any[]>([]);
+  const [ledgerGroups, setLedgerGroups] = useState<LedgerGroup[]>([]);
+  const [expandedJournalId, setExpandedJournalId] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [newLedgerGroup, setNewLedgerGroup] = useState({ name: '', type: 'Asset' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense' });
+  const [newCategory, setNewCategory] = useState({ name: '', order: 0 });
+  const [isMenuOpen, setIsMenuOpen] = useState(true);
+  const [isManageTreeOpen, setIsManageTreeOpen] = useState(false);
+  const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
+  const [reportView, setReportView] = useState<'cards' | 'spreadsheet'>('cards');
+  const [spreadsheetTab, setSpreadsheetTab] = useState<'journal' | 'trial_balance' | 'profit_loss'>('journal');
 
   const handleAddLedgerGroup = async () => {
     if (!newLedgerGroup.name) return;
     try {
-      await addDoc(collection(db, 'ledgerGroups'), {
+      await addDoc(collection(db, 'ledger_groups'), {
         ...newLedgerGroup,
         createdAt: serverTimestamp()
       });
       setNewLedgerGroup({ name: '', type: 'Asset' });
     } catch (error) {
-      console.error("Error adding ledger group:", error);
+      handleFirestoreError(error, OperationType.CREATE, 'ledger_groups');
     }
   };
 
   const deleteLedgerGroup = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this ledger group?')) return;
     try {
-      await deleteDoc(doc(db, 'ledgerGroups', id));
+      await deleteDoc(doc(db, 'ledger_groups', id));
     } catch (error) {
-      console.error("Error deleting ledger group:", error);
+      handleFirestoreError(error, OperationType.DELETE, `ledger_groups/${id}`);
+    }
+  };
+
+  const handleAddCategory = async () => {
+    if (!newCategory.name) return;
+    try {
+      await addDoc(collection(db, 'categories'), {
+        ...newCategory,
+        createdAt: serverTimestamp()
+      });
+      setNewCategory({ name: '', order: categories.length });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'categories');
+    }
+  };
+
+  const deleteCategory = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this category? Items in this category will become uncategorized.')) return;
+    try {
+      await deleteDoc(doc(db, 'categories', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `categories/${id}`);
     }
   };
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [expandedJournalEntryId, setExpandedJournalEntryId] = useState<string | null>(null);
+  const [expandedStockItemId, setExpandedStockItemId] = useState<string | null>(null);
   
+  const filteredJournalEntries = journalEntries.filter(entry => {
+    const date = new Date(entry.date);
+    const isAfterStart = !accountingDateRange.start || date >= new Date(accountingDateRange.start);
+    const isBeforeEnd = !accountingDateRange.end || date <= new Date(accountingDateRange.end);
+    const matchesSearch = !accountingSearch || 
+      entry.description?.toLowerCase().includes(accountingSearch.toLowerCase()) ||
+      entry.reference?.toLowerCase().includes(accountingSearch.toLowerCase()) ||
+      entry.lines.some((l: any) => l.accountName.toLowerCase().includes(accountingSearch.toLowerCase()));
+    return isAfterStart && isBeforeEnd && matchesSearch;
+  });
+
+  const totalRevenue = filteredJournalEntries.reduce((acc, entry) => {
+    // Revenue accounts usually have credit balance
+    const revenueLines = entry.lines.filter((l: any) => {
+      const lg = ledgerGroups.find(g => g.id === l.accountId);
+      return lg?.type === 'Revenue' || l.accountName.toLowerCase().includes('sales') || l.accountName.toLowerCase().includes('revenue');
+    });
+    return acc + revenueLines.reduce((sum: number, l: any) => sum + l.credit - l.debit, 0);
+  }, 0);
+
+  const totalExpenses = filteredJournalEntries.reduce((acc, entry) => {
+    // Expense accounts usually have debit balance
+    const expenseLines = entry.lines.filter((l: any) => {
+      const lg = ledgerGroups.find(g => g.id === l.accountId);
+      return lg?.type === 'Expense' || 
+        l.accountName.toLowerCase().includes('expense') || 
+        l.accountName.toLowerCase().includes('purchase') ||
+        l.accountName.toLowerCase().includes('cost of goods sold') ||
+        l.accountName.toLowerCase().includes('wastage');
+    });
+    return acc + expenseLines.reduce((sum: number, l: any) => sum + l.debit - l.credit, 0);
+  }, 0);
+
+  const totalOrdersCount = filteredJournalEntries.filter(e => 
+    e.reference?.startsWith('POS-') || 
+    e.description?.toLowerCase().includes('order') ||
+    e.description?.toLowerCase().includes('sale')
+  ).length;
+
   const isSuperAdmin = user?.email === 'ashkan.yaghtin@gmail.com';
   const userRole = profile?.role || 'waiter';
 
   const canAccess = (tab: string) => {
     if (isSuperAdmin || userRole === 'admin') return true;
     
+    // Check for granular permissions if available
+    const userProfile = staff.find(s => s.uid === user?.uid);
+    if (userProfile?.permissions) {
+      if (userProfile.permissions[tab] === true) return true;
+    }
+
     switch (tab) {
       case 'dashboard':
       case 'orders':
@@ -88,15 +168,18 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [journal, setJournal] = useState<JournalEntry[]>([]);
+  const [journal, setJournal] = useState<Journal[]>([]);
+  const [accountingFilters, setAccountingFilters] = useState({
+    fromDate: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0],
+    toDate: new Date().toISOString().split('T')[0],
+    type: 'all'
+  });
   const [bills, setBills] = useState<any[]>([]);
   const [vendors, setVendors] = useState<any[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [cheques, setCheques] = useState<any[]>([]);
-  const [journalEntries, setJournalEntries] = useState<any[]>([]);
   const [staff, setStaff] = useState<any[]>([]);
-  const [ledgerGroups, setLedgerGroups] = useState<LedgerGroup[]>([]);
-  const [isManagingTree, setIsManagingTree] = useState(false);
+  const [isManagingCategories, setIsManagingCategories] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
   const [managingRecipeId, setManagingRecipeId] = useState<string | null>(null);
@@ -121,7 +204,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     costPerUnit: 0,
     lowStockThreshold: 10
   });
-  const [adjustingStock, setAdjustingStock] = useState<{ id: string, type: 'add' | 'remove', amount: number, price?: number } | null>(null);
+  const [adjustingStock, setAdjustingStock] = useState<{ id: string, type: 'add' | 'remove', amount: number, price?: number, supplierId?: string } | null>(null);
   const [editingInventoryId, setEditingInventoryId] = useState<string | null>(null);
   const [editInventoryForm, setEditInventoryForm] = useState<Partial<InventoryItem>>({});
 
@@ -158,8 +241,43 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   // Accounting Modals
   const [isAddingVoucher, setIsAddingVoucher] = useState(false);
   const [isAddingBill, setIsAddingBill] = useState(false);
-  const [isAddingCheque, setIsAddingCheque] = useState(false);
+  const [isAddingTransfer, setIsAddingTransfer] = useState(false);
+  const [transferForm, setTransferForm] = useState({ fromAccount: 'cash', toAccount: 'bank', amount: 0, reference: '', date: new Date().toISOString().split('T')[0] });
+
+  const handleAddTransfer = async () => {
+    if (!transferForm.amount || transferForm.amount <= 0) return;
+    try {
+      const amountInCents = Math.round(transferForm.amount * 100);
+      
+      // Create a formal journal entry for the transfer
+      await addDoc(collection(db, 'journal_entries'), {
+        date: transferForm.date,
+        reference: transferForm.reference || `TRF-${Date.now().toString().slice(-6)}`,
+        description: `Fund Transfer: ${transferForm.fromAccount.toUpperCase()} to ${transferForm.toAccount.toUpperCase()}`,
+        timestamp: serverTimestamp(),
+        lines: [
+          { accountId: transferForm.toAccount, accountName: transferForm.toAccount === 'cash' ? 'Cash' : 'Bank', debit: amountInCents, credit: 0 },
+          { accountId: transferForm.fromAccount, accountName: transferForm.fromAccount === 'cash' ? 'Cash' : 'Bank', debit: 0, credit: amountInCents }
+        ]
+      });
+
+      // Also record in simple journal for dashboard visibility
+      await addDoc(collection(db, 'journal'), {
+        type: 'transfer',
+        amount: amountInCents,
+        description: `Fund Transfer: ${transferForm.fromAccount.toUpperCase()} to ${transferForm.toAccount.toUpperCase()}`,
+        timestamp: serverTimestamp()
+      });
+
+      setIsAddingTransfer(false);
+      setTransferForm({ fromAccount: 'cash', toAccount: 'bank', amount: 0, reference: '', date: new Date().toISOString().split('T')[0] });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'journal_entries');
+    }
+  };
   const [isAddingVendor, setIsAddingVendor] = useState(false);
+  const [isAddingCheque, setIsAddingCheque] = useState(false);
+  const [journalError, setJournalError] = useState('');
   const [isAddingJournalEntry, setIsAddingJournalEntry] = useState(false);
   
   const [voucherForm, setVoucherForm] = useState({ type: 'receipt', amount: 0, description: '', date: new Date().toISOString().split('T')[0], paymentMethod: 'cash' });
@@ -264,7 +382,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     if (!user) return;
     const q = query(collection(db, 'journal'), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setJournal(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as JournalEntry)));
+      setJournal(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Journal)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'journal'));
     return () => unsubscribe();
   }, [user]);
@@ -309,7 +427,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     if (!user || activeTab !== 'accounting') return;
     const q = query(collection(db, 'journal'), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setJournal(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as JournalEntry)));
+      setJournal(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Journal)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'journal'));
     return () => unsubscribe();
   }, [user, activeTab]);
@@ -323,10 +441,38 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleAddTransaction = async () => {
     try {
+      const amountInCents = Math.round(newTransaction.amount * 100);
+      
+      // 1. Record in simple journal for backward compatibility
       await addDoc(collection(db, 'journal'), {
         ...newTransaction,
+        amount: amountInCents,
         timestamp: serverTimestamp()
       });
+
+      // 2. Create a formal journal entry for the dashboard
+      await addDoc(collection(db, 'journal_entries'), {
+        date: new Date().toISOString().split('T')[0],
+        reference: `MAN-${Date.now().toString().slice(-6)}`,
+        description: newTransaction.description,
+        type: newTransaction.type,
+        timestamp: serverTimestamp(),
+        lines: [
+          { 
+            accountId: newTransaction.type === 'sale' ? 'cash' : 'expense', 
+            accountName: newTransaction.type === 'sale' ? 'Cash' : 'Expense', 
+            debit: newTransaction.type === 'sale' ? amountInCents : amountInCents, 
+            credit: 0 
+          },
+          { 
+            accountId: newTransaction.type === 'sale' ? 'revenue' : 'cash', 
+            accountName: newTransaction.type === 'sale' ? 'Sales Revenue' : 'Cash', 
+            debit: 0, 
+            credit: newTransaction.type === 'sale' ? amountInCents : amountInCents 
+          }
+        ]
+      });
+
       setShowAddTransaction(false);
       setNewTransaction({ type: 'expense', amount: 0, description: '' });
     } catch (err) {
@@ -338,6 +484,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     try {
       await addDoc(collection(db, 'vouchers'), {
         ...voucherForm,
+        amount: Math.round(voucherForm.amount * 100),
         createdAt: serverTimestamp()
       });
       setIsAddingVoucher(false);
@@ -351,6 +498,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     try {
       await addDoc(collection(db, 'bills'), {
         ...billForm,
+        amount: Math.round(billForm.amount * 100),
         createdAt: serverTimestamp()
       });
       setIsAddingBill(false);
@@ -364,6 +512,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     try {
       await addDoc(collection(db, 'cheques'), {
         ...chequeForm,
+        amount: Math.round(chequeForm.amount * 100),
         createdAt: serverTimestamp()
       });
       setIsAddingCheque(false);
@@ -387,22 +536,30 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   };
 
   const handleAddJournalEntry = async () => {
+    setJournalError('');
     const totalDebit = journalEntryForm.lines.reduce((sum, line) => sum + line.debit, 0);
     const totalCredit = journalEntryForm.lines.reduce((sum, line) => sum + line.credit, 0);
 
     if (Math.abs(totalDebit - totalCredit) > 0.01) {
-      alert("Debits and Credits must balance!");
+      setJournalError("Debits and Credits must balance!");
       return;
     }
 
     try {
+      const formattedLines = journalEntryForm.lines.map(line => ({
+        ...line,
+        debit: Math.round(line.debit * 100),
+        credit: Math.round(line.credit * 100)
+      }));
+
       await addDoc(collection(db, 'journal_entries'), {
         ...journalEntryForm,
+        lines: formattedLines,
         timestamp: serverTimestamp()
       });
       
       // Also add to the general journal for the dashboard
-      for (const line of journalEntryForm.lines) {
+      for (const line of formattedLines) {
         if (line.debit > 0 || line.credit > 0) {
           await addDoc(collection(db, 'journal'), {
             type: line.debit > 0 ? 'expense' : 'sale', // Simplified for dashboard
@@ -520,7 +677,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleEdit = (item: MenuItem) => {
     setEditingId(item.id);
-    setEditForm(item);
+    setEditForm({
+      ...item,
+      price: item.price // Already in cents
+    });
   };
 
   const handleSave = async (id: string) => {
@@ -529,6 +689,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       const { id: _, ...dataToUpdate } = editForm;
       const updatedItem = {
         ...dataToUpdate,
+        price: Number(dataToUpdate.price) || 0, // Already in cents
         image: formatImageUrl(editForm.image || '')
       };
       await updateDoc(itemRef, updatedItem);
@@ -540,14 +701,20 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleEditInventory = (item: InventoryItem) => {
     setEditingInventoryId(item.id);
-    setEditInventoryForm(item);
+    setEditInventoryForm({
+      ...item,
+      costPerUnit: (item.costPerUnit || 0) / 100 // Convert cents to dollars for input
+    });
   };
 
   const handleSaveInventory = async (id: string) => {
     try {
       const itemRef = doc(db, 'inventory', id);
       const { id: _, ...dataToUpdate } = editInventoryForm;
-      await updateDoc(itemRef, dataToUpdate);
+      await updateDoc(itemRef, {
+        ...dataToUpdate,
+        costPerUnit: Math.round((dataToUpdate.costPerUnit || 0) * 100) // Convert dollars to cents for storage
+      });
       setEditingInventoryId(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, 'inventory');
@@ -582,7 +749,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     try {
       await addDoc(collection(db, 'menu'), {
         ...newForm,
-        price: Number(newForm.price) || 0,
+        price: Number(newForm.price) || 0, // Already in cents
         available: true,
         image: formatImageUrl(newForm.image || '')
       });
@@ -903,6 +1070,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             { id: 'orders', name: 'Order Management', icon: <ShoppingBag size={18} /> },
             { id: 'menu', name: 'Menu Items', icon: <LayoutGrid size={18} /> },
             { id: 'recipes', name: 'Recipe Management', icon: <BookOpen size={18} /> },
+            { id: 'production', name: 'Production', icon: <ChefHat size={18} /> },
             { id: 'kitchen', name: 'Kitchen (KDS)', icon: <ChefHat size={18} /> },
             { id: 'inventory', name: 'Inventory', icon: <Boxes size={18} /> },
             { id: 'suppliers', name: 'Suppliers & Purchases', icon: <Truck size={18} /> },
@@ -976,6 +1144,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               { id: 'orders', name: 'Order Management', icon: <ShoppingBag size={18} /> },
               { id: 'menu', name: 'Menu Items', icon: <LayoutGrid size={18} /> },
               { id: 'recipes', name: 'Recipe Management', icon: <BookOpen size={18} /> },
+              { id: 'production', name: 'Production', icon: <ChefHat size={18} /> },
               { id: 'kitchen', name: 'Kitchen (KDS)', icon: <ChefHat size={18} /> },
               { id: 'inventory', name: 'Inventory', icon: <Boxes size={18} /> },
               { id: 'suppliers', name: 'Suppliers & Purchases', icon: <Truck size={18} /> },
@@ -1135,6 +1304,17 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                         onChange={e => setSystemSettings({...systemSettings, taxId: e.target.value})}
                       />
                     </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Print Server URLs (Comma Separated)</label>
+                      <input 
+                        type="text" 
+                        className="w-full p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                        value={systemSettings?.printServerUrls || ''} 
+                        onChange={e => setSystemSettings({...systemSettings, printServerUrls: e.target.value})}
+                        placeholder="http://192.168.1.100:5000, http://192.168.1.101:5000"
+                      />
+                      <p className="text-[10px] text-zinc-400 mt-1 italic">Used for KOT and multi-printer support. Separate multiple URLs with commas.</p>
+                    </div>
                   </div>
                 </div>
                 <div className="p-8 bg-white border border-zinc-100 rounded-[2.5rem] shadow-sm">
@@ -1143,6 +1323,18 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     POS Configuration
                   </h3>
                   <div className="space-y-4">
+                    <div className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
+                      <div>
+                        <p className="text-sm font-bold text-zinc-900">Sold by Piece</p>
+                        <p className="text-xs text-zinc-500">Automatically deduct ingredients on each sale</p>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        className="w-5 h-5 accent-primary" 
+                        checked={systemSettings?.soldByPiece !== false} 
+                        onChange={e => setSystemSettings({...systemSettings, soldByPiece: e.target.checked})}
+                      />
+                    </div>
                     <div className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
                       <div>
                         <p className="text-sm font-bold text-zinc-900">Auto-Finalize Orders</p>
@@ -1159,11 +1351,83 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     </div>
                   </div>
                 </div>
+                <div className="p-8 bg-white border border-zinc-100 rounded-[2.5rem] shadow-sm md:col-span-2">
+                  <h3 className="font-bold text-zinc-900 mb-6 flex items-center gap-2">
+                    <Settings size={18} className="text-zinc-400" />
+                    Theme Configuration
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Primary Color</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="color" 
+                          className="w-12 h-12 p-1 border border-zinc-200 rounded-xl cursor-pointer" 
+                          value={systemSettings?.theme?.primaryColor || '#8B1E3F'} 
+                          onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, primaryColor: e.target.value}})}
+                        />
+                        <input 
+                          type="text" 
+                          className="flex-1 p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                          value={systemSettings?.theme?.primaryColor || '#8B1E3F'} 
+                          onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, primaryColor: e.target.value}})}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Secondary Color</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="color" 
+                          className="w-12 h-12 p-1 border border-zinc-200 rounded-xl cursor-pointer" 
+                          value={systemSettings?.theme?.secondaryColor || '#64748b'} 
+                          onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, secondaryColor: e.target.value}})}
+                        />
+                        <input 
+                          type="text" 
+                          className="flex-1 p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                          value={systemSettings?.theme?.secondaryColor || '#64748b'} 
+                          onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, secondaryColor: e.target.value}})}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Accent Color</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="color" 
+                          className="w-12 h-12 p-1 border border-zinc-200 rounded-xl cursor-pointer" 
+                          value={systemSettings?.theme?.accentColor || '#76B947'} 
+                          onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, accentColor: e.target.value}})}
+                        />
+                        <input 
+                          type="text" 
+                          className="flex-1 p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                          value={systemSettings?.theme?.accentColor || '#76B947'} 
+                          onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, accentColor: e.target.value}})}
+                        />
+                      </div>
+                    </div>
+                    <div className="md:col-span-3 flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
+                      <div>
+                        <p className="text-sm font-bold text-zinc-900">Dark Mode</p>
+                        <p className="text-xs text-zinc-500">Enable dark mode for the frontend</p>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        className="w-5 h-5 accent-primary" 
+                        checked={systemSettings?.theme?.darkMode || false} 
+                        onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, darkMode: e.target.checked}})}
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
               <div className="flex justify-end items-center gap-4">
                 {saveSuccess && <span className="text-emerald-600 font-bold animate-in fade-in">Settings saved successfully!</span>}
                 <button 
                   onClick={async () => {
+                    if (!systemSettings) return;
                     try {
                       await setDoc(doc(db, 'settings', 'system'), systemSettings);
                       setSaveSuccess(true);
@@ -1178,6 +1442,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </button>
               </div>
             </div>
+          ) : activeTab === 'production' ? (
+            <ProductionSection inventory={inventory} items={items} />
           ) : activeTab === 'orders' ? (
             <div className="flex-1 flex flex-col overflow-hidden">
               {/* Filter Bar */}
@@ -1425,34 +1691,46 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               <BarChart3 size={14} className="text-primary" />
                               Accounting & Stock Flow
                             </h4>
-                            <button 
-                              onClick={() => {
-                                setActiveTab('accounting');
-                              }}
-                              className="text-[10px] font-bold text-primary hover:underline"
-                            >
-                              View Full Ledger →
-                            </button>
                           </div>
                           
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             {/* Journal Entries */}
                             <div className="space-y-3">
                               <p className="text-[10px] font-bold text-zinc-400 uppercase">Journal Entries</p>
+                              
                               <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
-                                {journal.filter(j => j.orderId === order.id || j.description.includes(order.id) || j.description.includes(order.orderNumber)).length > 0 ? (
-                                  journal.filter(j => j.orderId === order.id || j.description.includes(order.id) || j.description.includes(order.orderNumber)).map((entry, idx) => (
-                                    <div key={idx} className="p-3 border-b border-zinc-50 last:border-0 flex items-center justify-between">
-                                      <div>
-                                        <p className="text-xs font-bold text-zinc-900">{entry.type.toUpperCase()}</p>
-                                        <p className="text-[10px] text-zinc-500">{entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleString() : 'N/A'}</p>
-                                      </div>
-                                      <p className="text-xs font-black text-emerald-600">+{formatCurrency(entry.amount)}</p>
+                                {journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).length > 0 ? (
+                                  journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).map((entry, idx) => (
+                                    <div key={idx} className="border-b border-zinc-50 last:border-0">
+                                      <button 
+                                        onClick={() => setExpandedJournalEntryId(expandedJournalEntryId === entry.id ? null : entry.id)}
+                                        className="w-full p-3 flex items-center justify-between hover:bg-zinc-50 transition-colors text-left"
+                                      >
+                                        <p className="text-xs font-bold text-zinc-900">{entry.description}</p>
+                                        <div className="flex items-center gap-2">
+                                          <p className="text-[10px] text-zinc-500">{entry.date}</p>
+                                          <span className="text-zinc-400 text-[10px]">{expandedJournalEntryId === entry.id ? '▼' : '▶'}</span>
+                                        </div>
+                                      </button>
+                                      
+                                      {expandedJournalEntryId === entry.id && (
+                                        <div className="p-3 bg-zinc-50/50 space-y-1 border-t border-zinc-50">
+                                          {entry.lines.map((line: any, lIdx: number) => (
+                                            <div key={lIdx} className="flex items-center justify-between text-[10px]">
+                                              <span className="text-zinc-600">{line.accountName}</span>
+                                              <div className="flex gap-4">
+                                                <span className={line.debit > 0 ? 'text-emerald-600 font-bold' : 'text-zinc-400'}>{formatCurrency(line.debit)}</span>
+                                                <span className={line.credit > 0 ? 'text-blue-600 font-bold' : 'text-zinc-400'}>{formatCurrency(line.credit)}</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
                                   ))
                                 ) : (
                                   <div className="p-4 text-center">
-                                    <p className="text-[10px] text-zinc-400 italic">No journal entries found for this order.</p>
+                                    <p className="text-[10px] text-zinc-400 italic">No formal journal entries found for this order.</p>
                                   </div>
                                 )}
                               </div>
@@ -1461,34 +1739,43 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                             {/* Stock Flow */}
                             <div className="space-y-3">
                               <p className="text-[10px] font-bold text-zinc-400 uppercase">Associated Stock Flow</p>
+                              
                               <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
                                 {order.items.map((orderItem, idx) => {
                                   const menuItem = items.find(i => i.id === orderItem.itemId);
                                   const recipe = menuItem?.recipe || [];
+                                  const itemKey = `${order.id}-${idx}`;
                                   
                                   return (
                                     <div key={idx} className="border-b border-zinc-50 last:border-0">
-                                      <div className="p-3 bg-zinc-50/50">
+                                      <button 
+                                        onClick={() => setExpandedStockItemId(expandedStockItemId === itemKey ? null : itemKey)}
+                                        className="w-full p-3 flex items-center justify-between hover:bg-zinc-50 transition-colors text-left"
+                                      >
                                         <p className="text-xs font-black text-zinc-900">{orderItem.name} <span className="text-zinc-400 font-bold ml-1">x{orderItem.quantity}</span></p>
-                                      </div>
-                                      <div className="p-3 space-y-2">
-                                        {recipe.length > 0 ? (
-                                          recipe.map((ing, iIdx) => {
-                                            const invItem = inventory.find(inv => inv.id === ing.inventoryItemId);
-                                            return (
-                                              <div key={iIdx} className="flex justify-between items-center">
-                                                <p className="text-[10px] font-bold text-zinc-600">{invItem?.name || 'Unknown Ingredient'}</p>
-                                                <p className="text-[10px] font-black text-red-500">-{ (ing.quantity * orderItem.quantity).toFixed(2) } {invItem?.unit}</p>
-                                              </div>
-                                            );
-                                          })
-                                        ) : (
-                                          <div className="flex justify-between items-center">
-                                            <p className="text-[10px] font-bold text-zinc-400 italic">No recipe defined</p>
-                                            <p className="text-[10px] font-black text-red-500">-{orderItem.quantity} pcs</p>
-                                          </div>
-                                        )}
-                                      </div>
+                                        <span className="text-zinc-400 text-[10px]">{expandedStockItemId === itemKey ? '▼' : '▶'}</span>
+                                      </button>
+                                      
+                                      {expandedStockItemId === itemKey && (
+                                        <div className="p-3 bg-zinc-50/50 space-y-2 border-t border-zinc-50">
+                                          {recipe.length > 0 ? (
+                                            recipe.map((ing, iIdx) => {
+                                              const invItem = inventory.find(inv => inv.id === ing.inventoryItemId);
+                                              return (
+                                                <div key={iIdx} className="flex justify-between items-center">
+                                                  <p className="text-[10px] font-bold text-zinc-600">{invItem?.name || 'Unknown Ingredient'}</p>
+                                                  <p className="text-[10px] font-black text-red-500">-{ (ing.quantity * orderItem.quantity).toFixed(2) } {invItem?.unit}</p>
+                                                </div>
+                                              );
+                                            })
+                                          ) : (
+                                            <div className="flex justify-between items-center">
+                                              <p className="text-[10px] font-bold text-zinc-400 italic">No recipe defined</p>
+                                              <p className="text-[10px] font-black text-red-500">-{orderItem.quantity} pcs</p>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -1810,6 +2097,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     />
                     <input
                       type="number"
+                      step="0.01"
                       placeholder="Cost per Unit"
                       className="p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
                       value={inventoryForm.costPerUnit || ''}
@@ -1838,7 +2126,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                             name: inventoryForm.name,
                             stock: inventoryForm.stock || 0,
                             unit: inventoryForm.unit,
-                            costPerUnit: inventoryForm.costPerUnit || 0,
+                            costPerUnit: Math.round((inventoryForm.costPerUnit || 0) * 100), // Convert to cents
                             lowStockThreshold: inventoryForm.lowStockThreshold || 10,
                             lastUpdated: serverTimestamp()
                           });
@@ -1984,27 +2272,45 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               </div>
                               
                               {adjustingStock.type === 'add' && (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm font-bold text-zinc-600">Unit Price:</span>
-                                  <input
-                                    type="number"
-                                    className="w-20 p-1.5 rounded-lg border border-zinc-200 text-sm focus:ring-2 focus:ring-primary outline-none"
-                                    placeholder="Price"
-                                    value={adjustingStock.price || ''}
-                                    onChange={e => setAdjustingStock({ ...adjustingStock, price: Number(e.target.value) })}
-                                  />
+                                <div className="flex flex-col gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-bold text-zinc-600">Unit Price:</span>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      className="w-20 p-1.5 rounded-lg border border-zinc-200 text-sm focus:ring-2 focus:ring-primary outline-none"
+                                      placeholder="Price"
+                                      value={adjustingStock.price || ''}
+                                      onChange={e => setAdjustingStock({ ...adjustingStock, price: Number(e.target.value) })}
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-bold text-zinc-600">Supplier:</span>
+                                    <select
+                                      className="flex-1 p-1.5 rounded-lg border border-zinc-200 text-sm focus:ring-2 focus:ring-primary outline-none"
+                                      value={adjustingStock.supplierId || ''}
+                                      onChange={e => setAdjustingStock({ ...adjustingStock, supplierId: e.target.value })}
+                                    >
+                                      <option value="">Select Supplier...</option>
+                                      {vendors.map(v => (
+                                        <option key={v.id} value={v.id}>{v.name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
                                 </div>
                               )}
 
                               <div className="flex items-center gap-2 mt-2">
                                 <button
+                                  disabled={adjustingStock.type === 'add' && !adjustingStock.supplierId}
                                   onClick={async () => {
                                     if (!adjustingStock.amount || isNaN(adjustingStock.amount)) return;
+                                    if (adjustingStock.type === 'add' && !adjustingStock.supplierId) return;
                                     try {
                                       const currentStock = item.stock || 0;
-                                      const currentCost = item.costPerUnit || 0;
+                                      const currentCost = item.costPerUnit || 0; // Already in cents
                                       const newAmount = adjustingStock.amount;
-                                      const purchasePrice = adjustingStock.price || 0;
+                                      const purchasePrice = Math.round((adjustingStock.price || 0) * 100); // Convert to cents
 
                                       let newStock = currentStock;
                                       let newAverageCost = currentCost;
@@ -2013,18 +2319,32 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                         newStock = currentStock + newAmount;
                                         // Average Costing Formula: (Old Total Value + New Purchase Value) / (Old Total Quantity + New Purchase Quantity)
                                         if (newStock > 0) {
-                                          newAverageCost = ((currentStock * currentCost) + (newAmount * purchasePrice)) / newStock;
+                                          newAverageCost = Math.round(((currentStock * currentCost) + (newAmount * purchasePrice)) / newStock);
                                         } else {
                                           newAverageCost = purchasePrice;
                                         }
                                         
                                         // Record purchase expense in journal
                                         if (purchasePrice > 0) {
+                                          const supplier = vendors.find(v => v.id === adjustingStock.supplierId);
                                           await addDoc(collection(db, 'journal'), {
                                             type: 'expense',
-                                            amount: newAmount * purchasePrice,
-                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrency(purchasePrice)})`,
-                                            timestamp: serverTimestamp()
+                                            amount: newAmount * purchasePrice, // Now in cents
+                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrency(purchasePrice)})${supplier ? ` from ${supplier.name}` : ''}`,
+                                            timestamp: serverTimestamp(),
+                                            vendorId: adjustingStock.supplierId
+                                          });
+                                          
+                                          // Also create a formal journal entry
+                                          await addDoc(collection(db, 'journal_entries'), {
+                                            date: new Date().toISOString().split('T')[0],
+                                            reference: `INV-ADD-${item.name.substring(0, 3).toUpperCase()}`,
+                                            description: `Inventory Purchase: ${item.name}${supplier ? ` from ${supplier.name}` : ''}`,
+                                            timestamp: serverTimestamp(),
+                                            lines: [
+                                              { accountId: 'inventory', accountName: 'Inventory Asset', debit: newAmount * purchasePrice, credit: 0 },
+                                              { accountId: 'cash', accountName: 'Cash', debit: 0, credit: newAmount * purchasePrice }
+                                            ]
                                           });
                                         }
                                       } else {
@@ -2091,8 +2411,18 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-bold text-zinc-900">Financial Overview</h3>
                     <div className="flex gap-2">
+                      <div className="flex items-center gap-2 bg-white border border-zinc-200 px-4 py-2 rounded-xl">
+                        <Search size={14} className="text-zinc-400" />
+                        <input 
+                          type="text" 
+                          placeholder="Search journal..." 
+                          className="bg-transparent border-none outline-none text-xs font-medium w-48"
+                          value={accountingSearch}
+                          onChange={e => setAccountingSearch(e.target.value)}
+                        />
+                      </div>
                       <button 
-                        onClick={() => exportToExcel(journal, 'Transaction_Journal')}
+                        onClick={() => exportToExcel(filteredJournalEntries, 'Transaction_Journal')}
                         className="flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-50 transition-all"
                       >
                         <Download size={14} /> Export Journal
@@ -2161,17 +2491,19 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 <div className="p-8 bg-emerald-50 rounded-[2.5rem] border border-emerald-100">
                   <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-2">Total Revenue</p>
                   <h3 className="text-4xl font-black text-emerald-900">
-                    {formatCurrency(journal.reduce((acc, curr) => acc + (curr.type === 'sale' ? curr.amount : -curr.amount), 0))}
+                    {formatCurrency(totalRevenue / 100)}
                   </h3>
                 </div>
                 <div className="p-8 bg-blue-50 rounded-[2.5rem] border border-blue-100">
                   <p className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-2">Total Orders</p>
-                  <h3 className="text-4xl font-black text-blue-900">{journal.filter(j => j.type === 'sale').length}</h3>
+                  <h3 className="text-4xl font-black text-blue-900">
+                    {totalOrdersCount}
+                  </h3>
                 </div>
-                <div className="p-8 bg-zinc-50 rounded-[2.5rem] border border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Last Transaction</p>
-                  <h3 className="text-xl font-bold text-zinc-900">
-                    {journal[0]?.timestamp?.toDate ? journal[0].timestamp.toDate().toLocaleDateString() : 'No data'}
+                <div className="p-8 bg-orange-50 rounded-[2.5rem] border border-orange-100">
+                  <p className="text-xs font-bold text-orange-600 uppercase tracking-widest mb-2">Total Expenses</p>
+                  <h3 className="text-4xl font-black text-orange-900">
+                    {formatCurrency(totalExpenses / 100)}
                   </h3>
                 </div>
               </div>
@@ -2193,49 +2525,89 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   {[
                     { 
                       name: 'Assets', 
-                      balance: journal.reduce((acc, curr) => acc + (curr.type === 'sale' ? curr.amount : -curr.amount), 0), 
+                      balance: filteredJournalEntries.reduce((acc, entry) => {
+                        const assetLines = entry.lines.filter((l: any) => {
+                          const lg = ledgerGroups.find(g => g.id === l.accountId);
+                          return lg?.type === 'Asset' || l.accountName.toLowerCase().includes('cash') || l.accountName.toLowerCase().includes('bank') || l.accountName.toLowerCase().includes('inventory');
+                        });
+                        return acc + assetLines.reduce((sum: number, l: any) => sum + l.debit - l.credit, 0);
+                      }, 0), 
                       color: 'emerald' 
                     },
                     { 
                       name: 'Liabilities', 
-                      balance: 0, 
+                      balance: filteredJournalEntries.reduce((acc, entry) => {
+                        const liabilityLines = entry.lines.filter((l: any) => {
+                          const lg = ledgerGroups.find(g => g.id === l.accountId);
+                          return lg?.type === 'Liability' || l.accountName.toLowerCase().includes('payable') || l.accountName.toLowerCase().includes('loan');
+                        });
+                        return acc + liabilityLines.reduce((sum: number, l: any) => sum + l.credit - l.debit, 0);
+                      }, 0), 
                       color: 'red' 
                     },
                     { 
                       name: 'Equity', 
-                      balance: journal.reduce((acc, curr) => acc + (curr.type === 'sale' ? curr.amount : -curr.amount), 0), 
+                      balance: filteredJournalEntries.reduce((acc, entry) => {
+                        const equityLines = entry.lines.filter((l: any) => {
+                          const lg = ledgerGroups.find(g => g.id === l.accountId);
+                          return lg?.type === 'Equity' || l.accountName.toLowerCase().includes('equity') || l.accountName.toLowerCase().includes('capital');
+                        });
+                        return acc + equityLines.reduce((sum: number, l: any) => sum + l.credit - l.debit, 0);
+                      }, 0), 
                       color: 'blue' 
                     },
                     { 
                       name: 'Revenue', 
-                      balance: journal.filter(j => j.type === 'sale').reduce((acc, curr) => acc + curr.amount, 0), 
+                      balance: totalRevenue, 
                       color: 'indigo' 
                     },
                     { 
                       name: 'Expenses', 
-                      balance: journal.filter(j => j.type !== 'sale').reduce((acc, curr) => acc + curr.amount, 0), 
+                      balance: totalExpenses, 
                       color: 'orange' 
-                    },
-                    ...ledgerGroups.map(lg => ({
-                      name: lg.name,
-                      balance: 0,
-                      color: lg.type === 'Asset' ? 'emerald' : lg.type === 'Liability' ? 'red' : lg.type === 'Equity' ? 'blue' : lg.type === 'Revenue' ? 'indigo' : 'orange'
-                    }))
+                    }
                   ].map(group => (
                     <div key={group.name} className={`p-4 rounded-2xl border border-${group.color}-100 bg-${group.color}-50/30`}>
                       <p className={`text-[10px] font-bold text-${group.color}-600 uppercase tracking-widest mb-1`}>{group.name}</p>
-                      <p className="text-lg font-black text-zinc-900">{formatCurrency(group.balance)}</p>
+                      <p className="text-lg font-black text-zinc-900">{formatCurrency(group.balance / 100)}</p>
                     </div>
                   ))}
                 </div>
               </div>
 
               <div className="bg-white rounded-[2.5rem] border border-zinc-100 overflow-hidden">
-                <div className="p-6 border-b bg-zinc-50/50 flex items-center justify-between">
+                <div className="p-6 border-b bg-zinc-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <h3 className="font-bold text-zinc-900 flex items-center gap-2">
                     <History size={18} className="text-zinc-400" />
                     Transaction Journal
                   </h3>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                      <input 
+                        type="text" 
+                        placeholder="Search journal..."
+                        className="pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-xl text-xs focus:ring-2 focus:ring-primary outline-none w-48"
+                        value={accountingSearch}
+                        onChange={e => setAccountingSearch(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="date" 
+                        className="p-2 bg-white border border-zinc-200 rounded-xl text-[10px] font-bold outline-none"
+                        value={accountingDateRange.start}
+                        onChange={e => setAccountingDateRange({...accountingDateRange, start: e.target.value})}
+                      />
+                      <span className="text-zinc-400">-</span>
+                      <input 
+                        type="date" 
+                        className="p-2 bg-white border border-zinc-200 rounded-xl text-[10px] font-bold outline-none"
+                        value={accountingDateRange.end}
+                        onChange={e => setAccountingDateRange({...accountingDateRange, end: e.target.value})}
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
@@ -2245,34 +2617,111 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                         <th className="px-6 py-4">Description</th>
                         <th className="px-6 py-4">Type</th>
                         <th className="px-6 py-4 text-right">Amount</th>
+                        <th className="px-6 py-4"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
-                      {journal.map(entry => (
-                        <tr key={entry.id} className="hover:bg-zinc-50/50 transition-all">
-                          <td className="px-6 py-4 text-sm text-zinc-500">
-                            {entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleString() : 'Processing...'}
-                          </td>
-                          <td className="px-6 py-4 text-sm font-bold text-zinc-900">{entry.description}</td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase ${
-                              entry.type === 'sale' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                      {filteredJournalEntries.map(entry => (
+                        <React.Fragment key={entry.id}>
+                          <tr className="hover:bg-zinc-50/50 transition-all group">
+                            <td className="px-6 py-4 text-sm text-zinc-500">
+                              {entry.date}
+                            </td>
+                            <td className="px-6 py-4 text-sm font-bold text-zinc-900">
+                              <div className="flex flex-col">
+                                <span>{entry.description}</span>
+                                <span className="text-[10px] text-zinc-400 font-medium">Ref: {entry.reference}</span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase ${
+                                entry.lines.some((l: any) => l.credit > 0 && (l.accountName.toLowerCase().includes('sales') || l.accountName.toLowerCase().includes('revenue'))) 
+                                  ? 'bg-emerald-100 text-emerald-700' 
+                                  : 'bg-red-100 text-red-700'
+                              }`}>
+                                {entry.lines.some((l: any) => l.credit > 0 && (l.accountName.toLowerCase().includes('sales') || l.accountName.toLowerCase().includes('revenue'))) ? 'Income' : 'Expense'}
+                              </span>
+                            </td>
+                            <td className={`px-6 py-4 text-sm font-black text-right ${
+                              entry.lines.some((l: any) => l.credit > 0 && (l.accountName.toLowerCase().includes('sales') || l.accountName.toLowerCase().includes('revenue'))) ? 'text-emerald-600' : 'text-red-600'
                             }`}>
-                              {entry.type}
-                            </span>
-                          </td>
-                          <td className={`px-6 py-4 text-sm font-black text-right ${
-                            entry.type === 'sale' ? 'text-emerald-600' : 'text-red-600'
-                          }`}>
-                            {entry.type === 'sale' ? '+' : '-'}{formatCurrency(entry.amount)}
-                          </td>
-                        </tr>
+                              {formatCurrency(Math.max(
+                                entry.lines.reduce((sum: number, l: any) => sum + l.debit, 0),
+                                entry.lines.reduce((sum: number, l: any) => sum + l.credit, 0)
+                              ) / 100)}
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <button 
+                                onClick={() => setExpandedJournalId(expandedJournalId === entry.id ? null : entry.id)}
+                                className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-400 hover:text-primary"
+                              >
+                                {expandedJournalId === entry.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                              </button>
+                            </td>
+                          </tr>
+                          {expandedJournalId === entry.id && (
+                            <tr className="bg-zinc-50/50">
+                              <td colSpan={5} className="px-12 py-6">
+                                <div className="space-y-4">
+                                  <div className="flex items-center justify-between">
+                                    <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Transaction Details</h4>
+                                    <span className="text-[10px] font-bold text-zinc-400">ID: {entry.id}</span>
+                                  </div>
+                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+                                    <div>
+                                      <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Method</p>
+                                      <p className="text-sm font-bold text-zinc-900">{entry.paymentMethod || 'N/A'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Reference</p>
+                                      <p className="text-sm font-bold text-zinc-900">{entry.reference || 'N/A'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Account</p>
+                                      <p className="text-sm font-bold text-zinc-900">{entry.accountId || 'N/A'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Recorded By</p>
+                                      <p className="text-sm font-bold text-zinc-900">{entry.recordedBy || 'System'}</p>
+                                    </div>
+                                  </div>
+                                  {entry.lines && (
+                                    <div className="mt-4 border-t border-zinc-200 pt-4">
+                                      <p className="text-[10px] font-bold text-zinc-400 uppercase mb-2">Ledger Impact</p>
+                                      <div className="space-y-1">
+                                        {entry.lines.map((line: any, idx: number) => (
+                                          <div key={idx} className="flex justify-between text-xs font-medium py-1">
+                                            <span className="text-zinc-600">{line.accountName}</span>
+                                            <div className="flex gap-8">
+                                              <span className="w-24 text-right text-emerald-600">{line.debit > 0 ? formatCurrency(line.debit / 100) : '-'}</span>
+                                              <span className="w-24 text-right text-red-600">{line.credit > 0 ? formatCurrency(line.credit / 100) : '-'}</span>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>
                 </div>
               </div>
             </div>
+          ) : accountingSubTab === 'reports' ? (
+            <AccountingReportsIFRS 
+              journalEntries={journalEntries}
+              journal={journal}
+              orders={orders}
+              inventory={inventory}
+              items={items}
+              formatCurrency={formatCurrency}
+              exportToExcel={exportToExcel}
+            />
           ) : accountingSubTab === 'journal' ? (
             <div className="space-y-6">
               {isAddingJournalEntry && (
@@ -2284,6 +2733,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                         <X size={20} />
                       </button>
                     </div>
+                    {journalError && (
+                      <div className="mb-6 p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-bold flex items-center gap-2">
+                        <Ban size={16} />
+                        {journalError}
+                      </div>
+                    )}
                     <div className="space-y-6">
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="space-y-1">
@@ -2950,15 +3405,98 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 <div className="space-y-6">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-bold text-zinc-900">Fund Transfers</h3>
-                    <button className="flex items-center gap-2 bg-zinc-900 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-800 transition-all">
+                    <button 
+                      onClick={() => setIsAddingTransfer(true)}
+                      className="flex items-center gap-2 bg-zinc-900 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-800 transition-all"
+                    >
                       <Plus size={14} /> New Transfer
                     </button>
                   </div>
-                  <div className="space-y-4">
-                    {/* Mock transfers or list from state */}
-                    <div className="p-6 bg-zinc-50 rounded-[2rem] border border-dashed border-zinc-200 text-center">
-                      <p className="text-sm text-zinc-400 italic">No recent transfers recorded</p>
+
+                  {isAddingTransfer && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                      <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-8 animate-in zoom-in-95">
+                        <div className="flex justify-between items-center mb-6">
+                          <h3 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">New Transfer</h3>
+                          <button onClick={() => setIsAddingTransfer(false)} className="p-2 bg-zinc-100 text-zinc-500 rounded-full hover:bg-zinc-200 transition-colors">
+                            <X size={20} />
+                          </button>
+                        </div>
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">From</label>
+                              <select 
+                                className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                                value={transferForm.fromAccount}
+                                onChange={e => setTransferForm({...transferForm, fromAccount: e.target.value})}
+                              >
+                                <option value="cash">Cash</option>
+                                <option value="bank">Bank</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">To</label>
+                              <select 
+                                className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                                value={transferForm.toAccount}
+                                onChange={e => setTransferForm({...transferForm, toAccount: e.target.value})}
+                              >
+                                <option value="bank">Bank</option>
+                                <option value="cash">Cash</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Amount</label>
+                            <input 
+                              type="number" 
+                              className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                              value={transferForm.amount || ''}
+                              onChange={e => setTransferForm({...transferForm, amount: parseFloat(e.target.value)})}
+                              placeholder="0.00"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Reference (Optional)</label>
+                            <input 
+                              type="text" 
+                              className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                              value={transferForm.reference}
+                              onChange={e => setTransferForm({...transferForm, reference: e.target.value})}
+                              placeholder="e.g. TRF-001"
+                            />
+                          </div>
+                          <button 
+                            onClick={handleAddTransfer}
+                            disabled={transferForm.fromAccount === transferForm.toAccount || !transferForm.amount}
+                            className="w-full bg-primary text-white py-4 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:scale-[1.02] transition-all disabled:opacity-50 disabled:hover:scale-100"
+                          >
+                            Record Transfer
+                          </button>
+                        </div>
+                      </div>
                     </div>
+                  )}
+
+                  <div className="space-y-4">
+                    {journalEntries.filter(j => j.description.includes('Fund Transfer')).length > 0 ? (
+                      <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
+                        {journalEntries.filter(j => j.description.includes('Fund Transfer')).map((entry, idx) => (
+                          <div key={idx} className="p-4 border-b border-zinc-50 last:border-0 flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-bold text-zinc-900">{entry.description}</p>
+                              <p className="text-[10px] text-zinc-500">{entry.date} • {entry.reference}</p>
+                            </div>
+                            <p className="text-sm font-black text-zinc-900">{formatCurrency(entry.lines[0].debit)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-6 bg-zinc-50 rounded-[2rem] border border-dashed border-zinc-200 text-center">
+                        <p className="text-sm text-zinc-400 italic">No recent transfers recorded</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2974,274 +3512,6 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 {/* More tax cards */}
               </div>
             </div>
-          ) : accountingSubTab === 'reports' ? (
-            <div className="space-y-8">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-zinc-900">Financial Reports</h3>
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => exportToExcel(journal, 'Financial_Report')}
-                    className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
-                  >
-                    <FileSpreadsheet size={18} /> Export All to Excel
-                  </button>
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Profit & Loss Report */}
-                <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
-                      <FileText size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-zinc-900">Profit & Loss</h4>
-                      <p className="text-xs text-zinc-500">Revenue, COGS, and Expenses</p>
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    {(() => {
-                      const revenue = journal.filter(j => j.type === 'sale').reduce((acc, curr) => acc + curr.amount, 0);
-                      
-                      // Calculate COGS based on finalized orders and their recipes
-                      let cogs = 0;
-                      orders.filter(o => o.status === 'finalized').forEach(order => {
-                        order.items.forEach(orderItem => {
-                          const menuItem = items.find(m => m.id === orderItem.itemId);
-                          if (menuItem && menuItem.recipe) {
-                            menuItem.recipe.forEach(ing => {
-                              const invItem = inventory.find(i => i.id === ing.inventoryItemId);
-                              cogs += (invItem?.costPerUnit || 0) * ing.quantity * orderItem.quantity;
-                            });
-                          }
-                        });
-                      });
-
-                      const expenses = journal.filter(j => j.type === 'expense' && !j.description.includes('Inventory Purchase')).reduce((acc, curr) => acc + curr.amount, 0);
-                      
-                      const grossProfit = revenue - cogs;
-                      const netProfit = grossProfit - expenses;
-
-                      return (
-                        <>
-                          <div className="flex justify-between items-center text-sm">
-                            <span className="text-zinc-500">Revenue (Sales)</span>
-                            <span className="font-bold text-emerald-600">+{formatCurrency(revenue)}</span>
-                          </div>
-                          <div className="flex justify-between items-center text-sm">
-                            <span className="text-zinc-500">Cost of Goods Sold (COGS)</span>
-                            <span className="font-bold text-red-600">-{formatCurrency(cogs)}</span>
-                          </div>
-                          <div className="pt-2 border-t flex justify-between items-center text-sm font-bold">
-                            <span className="text-zinc-900">Gross Profit</span>
-                            <span className={grossProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}>{formatCurrency(grossProfit)}</span>
-                          </div>
-                          <div className="flex justify-between items-center text-sm">
-                            <span className="text-zinc-500">Operating Expenses</span>
-                            <span className="font-bold text-red-600">-{formatCurrency(expenses)}</span>
-                          </div>
-                          <div className="pt-4 border-t flex justify-between items-center">
-                            <span className="font-bold text-zinc-900">Net Profit</span>
-                            <span className={`text-xl font-black ${netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                              {formatCurrency(netProfit)}
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-zinc-400 mt-4 italic">* Inventory purchases are treated as assets until consumed (COGS).</p>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-                <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-emerald-100 text-emerald-600 rounded-2xl">
-                      <TrendingUp size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-zinc-900">Net Cash Flow</h4>
-                      <p className="text-xs text-zinc-500">Summary of all cash movements</p>
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-zinc-500">Total Inflow</span>
-                      <span className="font-bold text-emerald-600">+{formatCurrency(journal.filter(j => j.type === 'sale').reduce((acc, curr) => acc + curr.amount, 0))}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-zinc-500">Total Outflow</span>
-                      <span className="font-bold text-red-600">-{formatCurrency(journal.filter(j => j.type !== 'sale').reduce((acc, curr) => acc + curr.amount, 0))}</span>
-                    </div>
-                    <div className="pt-4 border-t flex justify-between items-center">
-                      <span className="font-bold text-zinc-900">Net Cash Flow</span>
-                      <span className="text-xl font-black text-zinc-900">
-                        {formatCurrency(journal.reduce((acc, curr) => acc + (curr.type === 'sale' ? curr.amount : -curr.amount), 0))}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
-                      <CreditCard size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-zinc-900">Payment Method Summary</h4>
-                      <p className="text-xs text-zinc-500">Breakdown by payment type</p>
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    {['Cash', 'Card', 'Online'].map(method => (
-                      <div key={method} className="flex justify-between items-center text-sm">
-                        <span className="text-zinc-500">{method}</span>
-                        <span className="font-bold text-zinc-900">
-                          {formatCurrency(journal.filter(j => j.type === 'sale' && (j.description.includes(method) || method === 'Cash')).reduce((acc, curr) => acc + curr.amount, 0))}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Sales by Category */}
-                <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-purple-100 text-purple-600 rounded-2xl">
-                      <LayoutGrid size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-zinc-900">Sales by Category</h4>
-                      <p className="text-xs text-zinc-500">Revenue breakdown by menu category</p>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    {(() => {
-                      const categorySales: Record<string, number> = {};
-                      orders.filter(o => o.status === 'paid' || o.status === 'finalized').forEach(order => {
-                        order.items.forEach(item => {
-                          const menuItem = items.find(i => i.id === item.itemId);
-                          const categoryId = menuItem?.category || 'uncategorized';
-                          categorySales[categoryId] = (categorySales[categoryId] || 0) + (item.price * item.quantity);
-                        });
-                      });
-                      
-                      const sortedCategories = Object.entries(categorySales).sort((a, b) => b[1] - a[1]);
-                      const totalSales = sortedCategories.reduce((acc, [_, amount]) => acc + amount, 0);
-
-                      return sortedCategories.length > 0 ? sortedCategories.map(([categoryId, amount]) => {
-                        const categoryName = categories.find(c => c.id === categoryId)?.name || 'Other';
-                        const percentage = totalSales > 0 ? Math.round((amount / totalSales) * 100) : 0;
-                        return (
-                          <div key={categoryId} className="space-y-1">
-                            <div className="flex justify-between items-center text-sm">
-                              <span className="font-medium text-zinc-700">{categoryName}</span>
-                              <span className="font-bold text-zinc-900">{formatCurrency(amount)}</span>
-                            </div>
-                            <div className="w-full bg-zinc-100 rounded-full h-2">
-                              <div className="bg-purple-500 h-2 rounded-full" style={{ width: `${percentage}%` }}></div>
-                            </div>
-                          </div>
-                        );
-                      }) : (
-                        <p className="text-sm text-zinc-500 text-center py-4">No sales data available.</p>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* Top Selling Items */}
-                <div className="p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-orange-100 text-orange-600 rounded-2xl">
-                      <ShoppingBag size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-zinc-900">Top Selling Items</h4>
-                      <p className="text-xs text-zinc-500">Best performing menu items</p>
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    {(() => {
-                      const itemSales: Record<string, { name: string, quantity: number, revenue: number }> = {};
-                      orders.filter(o => o.status === 'paid' || o.status === 'finalized').forEach(order => {
-                        order.items.forEach(item => {
-                          if (!itemSales[item.itemId]) {
-                            itemSales[item.itemId] = { name: item.name, quantity: 0, revenue: 0 };
-                          }
-                          itemSales[item.itemId].quantity += item.quantity;
-                          itemSales[item.itemId].revenue += (item.price * item.quantity);
-                        });
-                      });
-                      
-                      const topItems = Object.values(itemSales)
-                        .sort((a, b) => b.revenue - a.revenue)
-                        .slice(0, 5);
-
-                      return topItems.length > 0 ? topItems.map((item, index) => (
-                        <div key={index} className="flex justify-between items-center p-3 bg-zinc-50 rounded-xl">
-                          <div className="flex items-center gap-3">
-                            <div className="w-6 h-6 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center text-xs font-bold">
-                              {index + 1}
-                            </div>
-                            <div>
-                              <p className="text-sm font-bold text-zinc-900">{item.name}</p>
-                              <p className="text-[10px] text-zinc-500">{item.quantity} units sold</p>
-                            </div>
-                          </div>
-                          <span className="font-bold text-emerald-600">{formatCurrency(item.revenue)}</span>
-                        </div>
-                      )) : (
-                        <p className="text-sm text-zinc-500 text-center py-4">No sales data available.</p>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                <div className="md:col-span-2 p-8 bg-white rounded-[2.5rem] border border-zinc-100 space-y-6">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      <div className="p-3 bg-zinc-100 text-zinc-600 rounded-2xl">
-                        <Receipt size={24} />
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-zinc-900">Payment Method Detail</h4>
-                        <p className="text-xs text-zinc-500">Recent transactions by payment type</p>
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => exportToExcel(journal.filter(j => j.type === 'sale'), 'Payment_Detail')}
-                      className="text-xs font-bold text-primary hover:underline"
-                    >
-                      Export Detail
-                    </button>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="text-[10px] font-black text-zinc-400 uppercase tracking-widest border-b border-zinc-50">
-                          <th className="pb-4">Date</th>
-                          <th className="pb-4">Method</th>
-                          <th className="pb-4">Order #</th>
-                          <th className="pb-4 text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-zinc-50">
-                        {journal.filter(j => j.type === 'sale').slice(0, 5).map(j => (
-                          <tr key={j.id}>
-                            <td className="py-4 text-xs text-zinc-500">{j.timestamp?.toDate ? j.timestamp.toDate().toLocaleDateString() : 'N/A'}</td>
-                            <td className="py-4 text-xs font-bold text-zinc-900">
-                              {j.description.includes('Card') ? 'Card' : j.description.includes('Online') ? 'Online' : 'Cash'}
-                            </td>
-                            <td className="py-4 text-xs text-zinc-500">{j.description.split('#')[1] || 'Manual'}</td>
-                            <td className="py-4 text-xs font-black text-right text-emerald-600">+{formatCurrency(j.amount)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            </div>
           ) : null}
         </div>
       ) : activeTab === 'tables' ? (
@@ -3251,6 +3521,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-zinc-900">Menu Management</h3>
                 <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => setIsManageCategoriesOpen(true)}
+                    className="flex items-center gap-2 bg-zinc-100 text-zinc-600 px-6 py-3 rounded-2xl text-sm font-bold border border-zinc-200 hover:bg-zinc-200 transition-all"
+                  >
+                    <LayoutGrid size={18} /> Manage Categories
+                  </button>
                   <button 
                     onClick={() => setIsAdding(true)}
                     className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
@@ -3302,7 +3578,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       <label className="text-xs font-bold text-zinc-400 uppercase ml-1">Price (in cents)</label>
                       <input 
                         type="number" 
-                        placeholder="e.g. 1000 for AED 10.00" 
+                        step="1"
+                        placeholder="e.g. 1000 for 10.00" 
                         className="w-full p-4 rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all"
                         value={newForm.price}
                         onChange={e => setNewForm({...newForm, price: Number(e.target.value)})}
@@ -3385,9 +3662,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               />
                             </div>
                             <div className="space-y-1">
-                              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Price (cents)</label>
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Price (in cents)</label>
                               <input 
                                 type="number" 
+                                step="1"
                                 className="w-full p-2 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none"
                                 value={editForm.price}
                                 onChange={e => setEditForm({...editForm, price: Number(e.target.value)})}
@@ -3443,6 +3721,14 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                         </button>
                       ) : (
                         <>
+                          <button 
+                            onClick={() => setManagingRecipeId(item.id)}
+                            className="p-3 text-primary bg-primary/5 hover:bg-primary/10 rounded-2xl transition-all flex items-center gap-2"
+                            title="Manage Recipe"
+                          >
+                            <ChefHat size={20} />
+                            <span className="text-[10px] font-bold uppercase tracking-widest hidden lg:inline">Recipe</span>
+                          </button>
                           <button 
                             onClick={() => handleEdit(item)}
                             className="p-3 text-zinc-600 bg-zinc-50 hover:bg-zinc-100 rounded-2xl transition-all"
@@ -3505,6 +3791,69 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               >
                 Delete
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Categories Modal */}
+      {isManageCategoriesOpen && (
+        <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-xl shadow-2xl overflow-hidden border border-zinc-100">
+            <div className="p-8 border-b flex items-center justify-between bg-zinc-50/50">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-primary/10 rounded-2xl text-primary">
+                  <LayoutGrid size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-zinc-900">Manage Categories</h3>
+                  <p className="text-sm text-zinc-500">Add or remove menu categories</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsManageCategoriesOpen(false)}
+                className="p-2 hover:bg-zinc-200 rounded-xl transition-all text-zinc-400"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-8 space-y-6">
+              <div className="bg-zinc-50 p-6 rounded-3xl border border-zinc-100 space-y-4">
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Add New Category</p>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Category Name (e.g. Desserts)" 
+                    className="flex-1 p-4 rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm"
+                    value={newCategory.name}
+                    onChange={e => setNewCategory({...newCategory, name: e.target.value})}
+                  />
+                  <button 
+                    onClick={handleAddCategory}
+                    className="bg-zinc-900 text-white px-6 rounded-2xl font-bold text-sm hover:bg-zinc-800 transition-all"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Existing Categories</p>
+                <div className="max-h-[300px] overflow-y-auto pr-2 space-y-2 scrollbar-hide">
+                  {categories.sort((a, b) => a.order - b.order).map(cat => (
+                    <div key={cat.id} className="flex items-center justify-between p-4 bg-white border border-zinc-100 rounded-2xl hover:border-primary/20 transition-all group">
+                      <span className="text-sm font-bold text-zinc-900">{cat.name}</span>
+                      <button 
+                        onClick={() => deleteCategory(cat.id)}
+                        className="p-2 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -3608,44 +3957,76 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
 function StaffSection({ staff }: { staff: any[] }) {
   const [isAdding, setIsAdding] = useState(false);
-  const [form, setForm] = useState({ name: '', role: 'waiter', email: '', phone: '', password: '' });
+  const [form, setForm] = useState({ name: '', role: 'waiter', email: '', phone: '', password: '', permissions: {} as any });
   const [error, setError] = useState('');
+  const [editingPermissionsId, setEditingPermissionsId] = useState<string | null>(null);
+
+  const modules = [
+    { id: 'dashboard', name: 'Dashboard', icon: <BarChart3 size={14} /> },
+    { id: 'orders', name: 'Orders', icon: <ShoppingBag size={14} /> },
+    { id: 'menu', name: 'Menu', icon: <LayoutGrid size={14} /> },
+    { id: 'recipes', name: 'Recipes', icon: <Book size={14} /> },
+    { id: 'kitchen', name: 'Kitchen', icon: <Utensils size={14} /> },
+    { id: 'inventory', name: 'Inventory', icon: <Package size={14} /> },
+    { id: 'suppliers', name: 'Suppliers', icon: <Truck size={14} /> },
+    { id: 'accounting', name: 'Accounting', icon: <BookOpen size={14} /> },
+    { id: 'wastage', name: 'Wastage', icon: <Trash2 size={14} /> },
+    { id: 'production', name: 'Production', icon: <ChefHat size={14} /> },
+    { id: 'tables', name: 'Tables', icon: <Grid size={14} /> },
+    { id: 'crm', name: 'CRM', icon: <Users size={14} /> },
+    { id: 'users', name: 'Users', icon: <UserCheck size={14} /> },
+    { id: 'settings', name: 'Settings', icon: <Settings size={14} /> },
+  ];
 
   const handleAdd = async () => {
     setError('');
-    if (!form.name || !form.email || !form.password) {
-      setError('Name, email, and password are required.');
+    if (!form.name || !form.password) {
+      setError('Name and password are required.');
       return;
     }
+    const email = form.email || `${form.name.toLowerCase().replace(/\s+/g, '')}@system.local`;
     try {
+      console.log('Attempting to create user with email:', email);
       // Create user in Firebase Auth using secondary app to avoid logging out admin
-      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, form.email, form.password);
-      await signOut(secondaryAuth); // Sign out the secondary instance immediately
-
+      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, form.password);
+      console.log('User created in Auth:', userCredential.user.uid);
+      
       // Create auth user profile in 'users' collection
       await setDoc(doc(db, 'users', userCredential.user.uid), {
         name: form.name,
-        email: form.email,
+        email: email,
         role: form.role,
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        permissions: form.permissions
       });
+      console.log('User profile created in Firestore');
 
       // Create staff record
       await addDoc(collection(db, 'staff'), {
         name: form.name,
-        email: form.email,
+        email: email,
         phone: form.phone,
         role: form.role,
         uid: userCredential.user.uid,
         createdAt: serverTimestamp(),
-        active: true
+        active: true,
+        permissions: form.permissions
       });
+      console.log('Staff record created in Firestore');
 
-      setForm({ name: '', role: 'waiter', email: '', phone: '', password: '' });
+      await signOut(secondaryAuth); // Sign out the secondary instance immediately
+
+      setForm({ name: '', role: 'waiter', email: '', phone: '', password: '', permissions: {} });
       setIsAdding(false);
+      alert('Staff member added successfully!');
     } catch (err: any) {
-      setError(err.message || 'Failed to add staff');
-      if (err.code !== 'auth/email-already-in-use') {
+      console.error('Error adding staff:', err);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('Email/Password authentication is not enabled. Please enable it in the Firebase Console under Authentication > Sign-in method.');
+      } else {
+        setError(err.message || 'Failed to add staff');
+      }
+      if (err.code !== 'auth/email-already-in-use' && err.code !== 'auth/operation-not-allowed') {
         handleFirestoreError(err, OperationType.CREATE, 'staff');
       }
     }
@@ -3666,6 +4047,24 @@ function StaffSection({ staff }: { staff: any[] }) {
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `staff/${id}`);
+    }
+  };
+
+  const togglePermission = async (staffId: string, moduleId: string, currentPermissions: any) => {
+    try {
+      const newPermissions = {
+        ...(currentPermissions || {}),
+        [moduleId]: !currentPermissions?.[moduleId]
+      };
+      
+      await updateDoc(doc(db, 'staff', staffId), { permissions: newPermissions });
+      
+      const member = staff.find(s => s.id === staffId);
+      if (member && member.uid) {
+        await updateDoc(doc(db, 'users', member.uid), { permissions: newPermissions });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `staff/${staffId}/permissions`);
     }
   };
 
@@ -3719,6 +4118,35 @@ function StaffSection({ staff }: { staff: any[] }) {
             <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Password</label>
             <input type="password" placeholder="Set login password" className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.password} onChange={e => setForm({...form, password: e.target.value})} />
           </div>
+            <div className="md:col-span-2 space-y-2">
+              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Assign Modules</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-4 bg-white border border-zinc-200 rounded-xl">
+                {modules.map(mod => (
+                  <label key={mod.id} className={`flex items-center gap-2 p-2 rounded-lg border transition-all cursor-pointer group ${
+                    form.permissions[mod.id] ? 'bg-primary/5 border-primary/20' : 'bg-transparent border-transparent hover:bg-zinc-50'
+                  }`}>
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 accent-primary rounded"
+                      checked={form.permissions[mod.id] === true}
+                      onChange={() => setForm({
+                        ...form,
+                        permissions: {
+                          ...form.permissions,
+                          [mod.id]: !form.permissions[mod.id]
+                        }
+                      })}
+                    />
+                    <div className="flex items-center gap-2">
+                      <span className={`${form.permissions[mod.id] ? 'text-primary' : 'text-zinc-400'}`}>
+                        {mod.icon}
+                      </span>
+                      <span className={`text-[10px] font-bold ${form.permissions[mod.id] ? 'text-zinc-900' : 'text-zinc-500'}`}>{mod.name}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
           <div className="md:col-span-2 flex gap-4 pt-4">
             <button onClick={handleAdd} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary/90 transition-all">Save Staff</button>
             <button onClick={() => setIsAdding(false)} className="flex-1 py-3 bg-zinc-200 text-zinc-600 rounded-xl font-bold hover:bg-zinc-300 transition-all">Cancel</button>
@@ -3733,7 +4161,7 @@ function StaffSection({ staff }: { staff: any[] }) {
               <div className="w-12 h-12 bg-zinc-100 rounded-2xl flex items-center justify-center text-zinc-400 font-black text-xl">
                 {member.name[0]}
               </div>
-              <div>
+              <div className="flex-1">
                 <h4 className="font-bold text-zinc-900">{member.name}</h4>
                 <select 
                   className="text-[10px] text-primary font-bold uppercase tracking-widest bg-transparent outline-none cursor-pointer"
@@ -3747,13 +4175,416 @@ function StaffSection({ staff }: { staff: any[] }) {
                   <option value="driver">Driver</option>
                 </select>
               </div>
+              <button 
+                onClick={() => setEditingPermissionsId(editingPermissionsId === member.id ? null : member.id)}
+                className="p-2 text-zinc-400 hover:text-primary transition-colors"
+                title="Manage Permissions"
+              >
+                <ShieldCheck size={20} />
+              </button>
             </div>
+            
+            {editingPermissionsId === member.id && (
+              <div className="mb-4 p-5 bg-zinc-50 rounded-[2rem] border border-zinc-100 animate-in fade-in zoom-in-95">
+                <div className="flex items-center justify-between mb-4">
+                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Module Permissions</p>
+                  <button 
+                    onClick={() => {
+                      const allPerms = modules.reduce((acc, mod) => ({ ...acc, [mod.id]: true }), {});
+                      updateDoc(doc(db, 'staff', member.id), { permissions: allPerms });
+                    }}
+                    className="text-[10px] font-bold text-primary hover:underline"
+                  >
+                    Grant All
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {modules.map(mod => (
+                    <label key={mod.id} className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer group ${
+                      member.permissions?.[mod.id] 
+                        ? 'bg-white border-primary/20 shadow-sm' 
+                        : 'bg-transparent border-transparent hover:bg-white/50'
+                    }`}>
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${member.permissions?.[mod.id] ? 'bg-primary/10 text-primary' : 'bg-zinc-200 text-zinc-400'}`}>
+                          {mod.icon}
+                        </div>
+                        <span className={`text-xs font-bold ${member.permissions?.[mod.id] ? 'text-zinc-900' : 'text-zinc-500'}`}>{mod.name}</span>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        className="w-4 h-4 accent-primary rounded"
+                        checked={member.permissions?.[mod.id] === true}
+                        onChange={() => togglePermission(member.id, mod.id, member.permissions)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2 text-sm text-zinc-500">
               <p className="flex items-center gap-2"><Phone size={14} /> {member.phone || 'No phone'}</p>
               <p className="flex items-center gap-2"><FileText size={14} /> {member.email}</p>
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function ProductionSection({ inventory, items }: { inventory: InventoryItem[], items: MenuItem[] }) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [form, setForm] = useState({ 
+    menuItemId: '', 
+    quantity: 1,
+    laborCost: 0,
+    overheadCost: 0,
+    ingredients: [] as { inventoryItemId: string, name: string, quantity: number, unit: string }[]
+  });
+  const [productionHistory, setProductionHistory] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const selectedMenuItem = items.find(i => i.id === form.menuItemId);
+
+  useEffect(() => {
+    const q = query(collection(db, 'production'), orderBy('timestamp', 'desc'), limit(50));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setProductionHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'production'));
+    return () => unsubscribe();
+  }, []);
+
+  const handleMenuItemChange = (menuItemId: string) => {
+    const item = items.find(i => i.id === menuItemId);
+    if (item) {
+      const recipeWithDetails = (item.recipe || []).map(r => {
+        const inv = inventory.find(i => i.id === r.inventoryItemId);
+        return {
+          inventoryItemId: r.inventoryItemId,
+          name: inv?.name || 'Unknown',
+          quantity: r.quantity,
+          unit: inv?.unit || ''
+        };
+      });
+      setForm({
+        ...form,
+        menuItemId,
+        ingredients: recipeWithDetails,
+        laborCost: 0,
+        overheadCost: 0
+      });
+    } else {
+      setForm({ ...form, menuItemId: '', ingredients: [], laborCost: 0, overheadCost: 0 });
+    }
+  };
+
+  const handleProduce = async () => {
+    if (!form.menuItemId || form.quantity <= 0) return;
+    setLoading(true);
+    try {
+      // Check for sufficient stock
+      for (const ingredient of form.ingredients) {
+        const inv = inventory.find(i => i.id === ingredient.inventoryItemId);
+        const required = ingredient.quantity * form.quantity;
+        if (!inv || (inv.stock || 0) < required) {
+          alert(`Insufficient stock for ${ingredient.name}. Required: ${required}, Available: ${inv?.stock || 0}`);
+          setLoading(false);
+          return;
+        }
+      }
+
+      const menuItem = items.find(i => i.id === form.menuItemId);
+      if (!menuItem) throw new Error("Menu item not found");
+
+      // Calculate actual cost from raw materials + labor + overhead
+      let rawMaterialCost = 0;
+      for (const ingredient of form.ingredients) {
+        const inv = inventory.find(i => i.id === ingredient.inventoryItemId);
+        if (inv && inv.costPerUnit) {
+          rawMaterialCost += inv.costPerUnit * ingredient.quantity * form.quantity;
+        }
+      }
+
+      const totalLaborCost = Math.round(form.laborCost * 100);
+      const totalOverheadCost = Math.round(form.overheadCost * 100);
+      const actualTotalCost = rawMaterialCost + totalLaborCost + totalOverheadCost;
+      const costPerUnit = Math.round(actualTotalCost / form.quantity);
+
+      // Find or create matching inventory item for the finished good
+      let finishedGood = inventory.find(i => i.name === menuItem.name);
+      if (!finishedGood) {
+        // Create it if it doesn't exist
+        const newInvRef = await addDoc(collection(db, 'inventory'), {
+          name: menuItem.name,
+          stock: 0,
+          unit: 'pcs',
+          costPerUnit: costPerUnit,
+          lowStockThreshold: 5,
+          lastUpdated: serverTimestamp(),
+          isFinishedGood: true
+        });
+        finishedGood = { id: newInvRef.id, name: menuItem.name, stock: 0, unit: 'pcs', costPerUnit: costPerUnit, lowStockThreshold: 5 } as any;
+      } else {
+        // Update average cost for finished good
+        const oldTotalValue = finishedGood.stock * (finishedGood.costPerUnit || 0);
+        const newTotalQuantity = finishedGood.stock + form.quantity;
+        const newAverageCost = Math.round((oldTotalValue + actualTotalCost) / newTotalQuantity);
+        
+        await updateDoc(doc(db, 'inventory', finishedGood.id), {
+          costPerUnit: newAverageCost,
+          isFinishedGood: true
+        });
+      }
+
+      // Deduct raw materials
+      for (const ingredient of form.ingredients) {
+        const invRef = doc(db, 'inventory', ingredient.inventoryItemId);
+        const invDoc = await getDoc(invRef);
+        if (invDoc.exists()) {
+          const currentStock = invDoc.data().stock || 0;
+          const deduction = ingredient.quantity * form.quantity;
+          await updateDoc(invRef, {
+            stock: Math.max(0, currentStock - deduction),
+            lastUpdated: serverTimestamp()
+          });
+        }
+      }
+
+      // Add finished good to inventory
+      await updateDoc(doc(db, 'inventory', finishedGood.id), {
+        stock: (finishedGood.stock || 0) + form.quantity,
+        lastUpdated: serverTimestamp()
+      } as any);
+
+      // Record production
+      await addDoc(collection(db, 'production'), {
+        menuItemId: menuItem.id || '',
+        menuItemName: menuItem.name || '',
+        quantity: form.quantity || 0,
+        timestamp: serverTimestamp(),
+        ingredients: form.ingredients.map(ing => ({
+          inventoryItemId: ing.inventoryItemId || '',
+          name: ing.name || '',
+          quantity: ing.quantity || 0,
+          unit: ing.unit || ''
+        })),
+        rawMaterialCost: rawMaterialCost || 0,
+        laborCost: totalLaborCost || 0,
+        overheadCost: totalOverheadCost || 0,
+        totalCost: actualTotalCost || 0,
+        costPerUnit: costPerUnit || 0
+      });
+
+      // Accounting Entry
+      await addDoc(collection(db, 'journal_entries'), {
+        date: new Date().toISOString().split('T')[0],
+        reference: 'PROD',
+        description: `Production: ${form.quantity}x ${menuItem.name}`,
+        timestamp: serverTimestamp(),
+        lines: [
+          { accountId: 'inventory_fg', accountName: 'Inventory (Finished Goods)', debit: Math.round(actualTotalCost), credit: 0 },
+          { accountId: 'inventory_rm', accountName: 'Inventory (Raw Materials)', debit: 0, credit: Math.round(rawMaterialCost) },
+          ...(totalLaborCost > 0 ? [{ accountId: 'labor_expense', accountName: 'Labor Expense', debit: 0, credit: totalLaborCost }] : []),
+          ...(totalOverheadCost > 0 ? [{ accountId: 'overhead_expense', accountName: 'Overhead Expense', debit: 0, credit: totalOverheadCost }] : [])
+        ]
+      });
+
+      setForm({ menuItemId: '', quantity: 1, laborCost: 0, overheadCost: 0, ingredients: [] });
+      setIsAdding(false);
+      alert('Production successful!');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'production');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-3 bg-primary/10 text-primary rounded-2xl">
+            <ChefHat size={24} />
+          </div>
+          <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">Production Management</h2>
+        </div>
+        <button 
+          onClick={() => setIsAdding(true)}
+          className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl font-bold hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
+        >
+          <Plus size={20} /> New Production Run
+        </button>
+      </div>
+
+      {isAdding && (
+        <div className="p-8 bg-zinc-50 border border-zinc-200 rounded-[2.5rem] space-y-6 animate-in fade-in slide-in-from-top-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Menu Item to Produce</label>
+              <select 
+                className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                value={form.menuItemId} 
+                onChange={e => handleMenuItemChange(e.target.value)}
+              >
+                <option value="">Select Item...</option>
+                {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Quantity</label>
+              <input 
+                type="number" 
+                className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                value={form.quantity} 
+                onChange={e => setForm({...form, quantity: Number(e.target.value)})} 
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Labor Cost (Total)</label>
+              <input 
+                type="number" 
+                className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                value={form.laborCost} 
+                onChange={e => setForm({...form, laborCost: Number(e.target.value)})} 
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Overhead (Total)</label>
+              <input 
+                type="number" 
+                className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                value={form.overheadCost} 
+                onChange={e => setForm({...form, overheadCost: Number(e.target.value)})} 
+              />
+            </div>
+          </div>
+
+          {selectedMenuItem && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-zinc-400 uppercase tracking-widest">Recipe & Ingredients</h4>
+                <button 
+                  onClick={() => {
+                    const invItem = inventory[0];
+                    if (invItem) {
+                      setForm({
+                        ...form,
+                        ingredients: [...form.ingredients, { inventoryItemId: invItem.id, name: invItem.name, quantity: 1, unit: invItem.unit }]
+                      });
+                    }
+                  }}
+                  className="text-xs font-bold text-primary hover:underline"
+                >
+                  + Add Extra Ingredient
+                </button>
+              </div>
+              
+              <div className="space-y-2">
+                {form.ingredients.map((ing, idx) => {
+                  const inv = inventory.find(i => i.id === ing.inventoryItemId);
+                  const required = ing.quantity * form.quantity;
+                  const isLow = !inv || (inv.stock || 0) < required;
+                  return (
+                    <div key={idx} className={`flex items-center gap-4 p-3 border rounded-xl transition-all ${isLow ? 'bg-red-50 border-red-100' : 'bg-white border-zinc-100'}`}>
+                      <select 
+                        className="flex-1 p-2 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold outline-none"
+                        value={ing.inventoryItemId}
+                        onChange={e => {
+                          const inv = inventory.find(i => i.id === e.target.value);
+                          if (inv) {
+                            const newIngs = [...form.ingredients];
+                            newIngs[idx] = { ...newIngs[idx], inventoryItemId: inv.id, name: inv.name, unit: inv.unit };
+                            setForm({ ...form, ingredients: newIngs });
+                          }
+                        }}
+                      >
+                        {inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                      </select>
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="flex items-center gap-2">
+                          <input 
+                            type="number"
+                            className="w-20 p-2 bg-zinc-50 border border-zinc-100 rounded-lg text-xs font-bold text-center outline-none"
+                            value={ing.quantity}
+                            onChange={e => {
+                              const newIngs = [...form.ingredients];
+                              newIngs[idx].quantity = Number(e.target.value);
+                              setForm({ ...form, ingredients: newIngs });
+                            }}
+                          />
+                          <span className="text-[10px] font-bold text-zinc-400 uppercase">{ing.unit}</span>
+                        </div>
+                        <p className={`text-[10px] font-bold ${isLow ? 'text-red-600' : 'text-zinc-400'}`}>
+                          {isLow ? `Shortage: ${required - (inv?.stock || 0)}` : `Stock: ${inv?.stock || 0}`} {ing.unit}
+                        </p>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          const newIngs = [...form.ingredients];
+                          newIngs.splice(idx, 1);
+                          setForm({ ...form, ingredients: newIngs });
+                        }}
+                        className="p-2 text-zinc-300 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-4 pt-4">
+            <button 
+              onClick={handleProduce}
+              disabled={loading || !form.menuItemId || form.quantity <= 0}
+              className="flex-1 py-4 bg-primary text-white rounded-2xl font-bold hover:bg-primary/90 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
+            >
+              {loading ? 'Processing...' : 'Start Production'}
+            </button>
+            <button 
+              onClick={() => setIsAdding(false)}
+              className="flex-1 py-4 bg-zinc-200 text-zinc-600 rounded-2xl font-bold hover:bg-zinc-300 transition-all"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-[2.5rem] border border-zinc-100 overflow-hidden">
+        <table className="w-full text-left">
+          <thead>
+            <tr className="bg-zinc-50 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+              <th className="px-6 py-4">Date</th>
+              <th className="px-6 py-4">Produced Item</th>
+              <th className="px-6 py-4">Quantity</th>
+              <th className="px-6 py-4 text-right">Cost/Unit</th>
+              <th className="px-6 py-4 text-right">Total Cost</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {productionHistory.map(run => (
+              <tr key={run.id} className="hover:bg-zinc-50/50 transition-all">
+                <td className="px-6 py-4 text-sm text-zinc-500">
+                  {run.timestamp?.toDate ? run.timestamp.toDate().toLocaleString() : 'Processing...'}
+                </td>
+                <td className="px-6 py-4 text-sm font-bold text-zinc-900">{run.menuItemName}</td>
+                <td className="px-6 py-4 text-sm font-black text-primary">+{run.quantity}</td>
+                <td className="px-6 py-4 text-sm font-bold text-zinc-600 text-right">{formatCurrency((run.costPerUnit || 0) / 100)}</td>
+                <td className="px-6 py-4 text-sm font-bold text-zinc-900 text-right">{formatCurrency((run.totalCost || 0) / 100)}</td>
+              </tr>
+            ))}
+            {productionHistory.length === 0 && (
+              <tr>
+                <td colSpan={3} className="px-6 py-12 text-center text-zinc-400 italic text-sm">No production history yet.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -4065,9 +4896,9 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
         vendorName: selectedSupplier.name,
         invoiceNumber: invoiceForm.invoiceNumber,
         date: invoiceForm.date,
-        items: invoiceForm.items,
-        totalAmount: invoiceForm.totalAmount,
-        amountPaid: invoiceForm.amountPaid,
+        items: invoiceForm.items.map(item => ({...item, costPerUnit: Math.round(item.costPerUnit * 100)})),
+        totalAmount: Math.round(invoiceForm.totalAmount * 100),
+        amountPaid: Math.round(invoiceForm.amountPaid * 100),
         status: invoiceForm.amountPaid >= invoiceForm.totalAmount ? 'paid' : 'pending',
         createdAt: serverTimestamp()
       });
@@ -4076,8 +4907,15 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
       for (const item of invoiceForm.items) {
         const invItem = inventory.find(i => i.id === item.inventoryItemId);
         if (invItem) {
+          // Calculate new average cost
+          const oldTotalValue = invItem.stock * (invItem.costPerUnit || 0);
+          const newPurchaseValue = item.quantity * Math.round(item.costPerUnit * 100);
+          const newTotalQuantity = invItem.stock + item.quantity;
+          const newAverageCost = newTotalQuantity > 0 ? Math.round((oldTotalValue + newPurchaseValue) / newTotalQuantity) : 0;
+
           await updateDoc(doc(db, 'inventory', invItem.id), {
             stock: invItem.stock + item.quantity,
+            costPerUnit: newAverageCost,
             lastUpdated: serverTimestamp()
           });
         }
@@ -4087,29 +4925,31 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
       if (invoiceForm.amountPaid > 0) {
         await addDoc(collection(db, 'journal'), {
           type: 'expense',
-          amount: invoiceForm.amountPaid,
+          amount: Math.round(invoiceForm.amountPaid * 100),
           description: `Payment for Invoice #${invoiceForm.invoiceNumber} from ${selectedSupplier.name}`,
           timestamp: serverTimestamp(),
           billId: billRef.id,
           vendorId: selectedSupplier.id,
           accountId: invoiceForm.accountId
         });
-
-        // Also create a formal journal entry
-        await addDoc(collection(db, 'journal_entries'), {
-          date: invoiceForm.date,
-          reference: invoiceForm.invoiceNumber,
-          description: `Purchase from ${selectedSupplier.name}`,
-          timestamp: serverTimestamp(),
-          lines: [
-            { accountId: 'inventory', accountName: 'Inventory Asset', debit: invoiceForm.totalAmount, credit: 0 },
-            { accountId: invoiceForm.accountId, accountName: invoiceForm.accountId === 'cash' ? 'Cash' : 'Bank', debit: 0, credit: invoiceForm.amountPaid },
-            ...(invoiceForm.totalAmount > invoiceForm.amountPaid ? [
-              { accountId: 'accounts_payable', accountName: 'Accounts Payable', debit: 0, credit: invoiceForm.totalAmount - invoiceForm.amountPaid }
-            ] : [])
-          ]
-        });
       }
+
+      // Also create a formal journal entry
+      await addDoc(collection(db, 'journal_entries'), {
+        date: invoiceForm.date,
+        reference: invoiceForm.invoiceNumber,
+        description: `Purchase from ${selectedSupplier.name}`,
+        timestamp: serverTimestamp(),
+        lines: [
+          { accountId: 'inventory', accountName: 'Inventory Asset', debit: Math.round(invoiceForm.totalAmount * 100), credit: 0 },
+          ...(invoiceForm.amountPaid > 0 ? [
+            { accountId: invoiceForm.accountId, accountName: invoiceForm.accountId === 'cash' ? 'Cash' : 'Bank', debit: 0, credit: Math.round(invoiceForm.amountPaid * 100) }
+          ] : []),
+          ...(invoiceForm.totalAmount > invoiceForm.amountPaid ? [
+            { accountId: 'accounts_payable', accountName: 'Accounts Payable', debit: 0, credit: Math.round((invoiceForm.totalAmount - invoiceForm.amountPaid) * 100) }
+          ] : [])
+        ]
+      });
 
       setIsAddingInvoice(false);
       setInvoiceForm({
