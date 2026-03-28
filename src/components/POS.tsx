@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, onSnapshot, query, orderBy, updateDoc, doc, addDoc, serverTimestamp, getDocs, where, getDoc, limit } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, updateDoc, doc, addDoc, serverTimestamp, getDocs, where, getDoc, limit, deleteField } from 'firebase/firestore';
 import { ShoppingBag, Clock, CheckCircle2, Ban, Phone, MapPin, User, Package, ArrowLeft, ChefHat, Truck, FileText, Printer, Plus, Utensils, LayoutGrid, CreditCard, Banknote, Receipt, Users, Split, Calculator, X, Bell, Maximize2, MoreVertical, ChevronDown, Calendar, Hash, Tag, Pencil, Move, Layout, Search, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency } from '../utils/format';
@@ -18,6 +18,7 @@ export default function POS({ onClose }: POSProps) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [tables, setTables] = useState<Table[]>([]);
   const [filter, setFilter] = useState<Order['status'] | 'all'>('all');
+  const [orderTypeFilter, setOrderTypeFilter] = useState<Order['orderType'] | 'all'>('all');
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
   const [posStep, setPosStep] = useState<'tables' | 'menu'>('tables');
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
@@ -47,8 +48,8 @@ export default function POS({ onClose }: POSProps) {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
-          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
-          audio.playbackRate = 0.8;
+          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+          audio.playbackRate = 1.0;
           audio.play().catch(e => console.log('Audio play failed:', e));
         }
       });
@@ -76,9 +77,11 @@ export default function POS({ onClose }: POSProps) {
   const [noteInput, setNoteInput] = useState('');
   const [newTableId, setNewTableId] = useState('');
   const [orderTypeInput, setOrderTypeInput] = useState<Order['orderType']>('dine-in');
+  const [driverIdInput, setDriverIdInput] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [groups, setGroups] = useState<CustomerGroup[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
 
   const navigate = useNavigate();
 
@@ -108,12 +111,17 @@ export default function POS({ onClose }: POSProps) {
       setGroups(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomerGroup)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'customerGroups'));
 
+    const unsubscribeDrivers = onSnapshot(query(collection(db, 'staff'), where('role', '==', 'driver')), (snapshot) => {
+      setDrivers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'staff'));
+
     return () => {
       unsubscribe();
       unsubscribeMenu();
       unsubscribeCats();
       unsubscribeTables();
       unsubscribeGroups();
+      unsubscribeDrivers();
     };
   }, [user]);
 
@@ -176,7 +184,7 @@ export default function POS({ onClose }: POSProps) {
         const newOrder = snapshot.docs[0].data();
         if (newOrder.createdAt && newOrder.createdAt.toMillis() > lastOrderTimestamp) {
           // Play notification sound
-          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
+          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
           audio.play().catch(e => console.error("Sound play failed:", e));
           setLastOrderTimestamp(newOrder.createdAt.toMillis());
         }
@@ -307,7 +315,8 @@ export default function POS({ onClose }: POSProps) {
     `).join('');
 
     const subtotal = order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
-    const discountAmount = order.discountType === 'percentage' ? (subtotal * (order.discount / 100)) : (order.discount * 100);
+    const discountAmount = order.discountType === 'percentage' ? (subtotal * ((order.discount || 0) / 100)) : ((order.discount || 0) * 100);
+    const taxAmount = (subtotal - discountAmount) * 0.05; // Assuming 5% VAT
     const html = `
       <html>
         <head>
@@ -319,15 +328,21 @@ export default function POS({ onClose }: POSProps) {
             .item-row { display: flex; justify-content: space-between; margin: 5px 0; }
             .totals { border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px; }
             .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin-top: 5px; }
+            .info-row { display: flex; justify-content: space-between; font-size: 12px; margin: 2px 0; }
           </style>
         </head>
         <body onload="window.print(); window.close();">
           <div class="header">
             <h2 style="margin: 0;">RIVAS RESTAURANT</h2>
-            <p style="margin: 5px 0;">Order: #${order.id.slice(-6).toUpperCase()}</p>
-            <p style="margin: 5px 0;">Type: ${order.orderType.toUpperCase()}</p>
-            ${order.tableNumber ? `<p style="margin: 5px 0; font-size: 16px; font-weight: bold;">TABLE: ${order.tableNumber}</p>` : ''}
-            <p style="margin: 5px 0;">Date: ${new Date().toLocaleString()}</p>
+            <p style="margin: 5px 0; font-size: 12px;">TRN: 100000000000000</p>
+            <p style="margin: 5px 0; font-size: 12px;">Tel: +971 4 123 4567</p>
+            <div style="border-top: 1px dashed #000; margin: 10px 0;"></div>
+            <div class="info-row"><span>Order:</span><span>#${order.id.slice(-6).toUpperCase()}</span></div>
+            <div class="info-row"><span>Type:</span><span>${order.orderType.toUpperCase()}</span></div>
+            ${order.tableNumber ? `<div class="info-row"><span>Table:</span><span>${order.tableNumber}</span></div>` : ''}
+            ${order.waiter ? `<div class="info-row"><span>Waiter:</span><span>${order.waiter}</span></div>` : ''}
+            ${order.occupancy ? `<div class="info-row"><span>Guests:</span><span>${order.occupancy}</span></div>` : ''}
+            <div class="info-row"><span>Date:</span><span>${new Date().toLocaleString()}</span></div>
           </div>
           <div class="items">
             ${itemsHtml}
@@ -338,13 +353,28 @@ export default function POS({ onClose }: POSProps) {
               <span>${formatCurrency(subtotal)}</span>
             </div>
             ${order.discount ? `<div class="item-row"><span>Discount ${order.discountType === 'percentage' ? `(${order.discount}%)` : ''}:</span><span>-${formatCurrency(discountAmount)}</span></div>` : ''}
+            <div class="item-row">
+              <span>VAT (5%):</span>
+              <span>${formatCurrency(taxAmount)}</span>
+            </div>
             <div class="total-row">
               <span>TOTAL:</span>
               <span>${formatCurrency(order.total)}</span>
             </div>
+            ${order.paymentMethod ? `
+            <div style="border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px;">
+              <div class="info-row"><span>Payment Method:</span><span style="text-transform: uppercase;">${order.paymentMethod}</span></div>
+              ${order.paymentMethod === 'multi' && order.multiPayment ? `
+                <div class="info-row"><span>- Cash:</span><span>${formatCurrency(order.multiPayment.cash)}</span></div>
+                <div class="info-row"><span>- Card:</span><span>${formatCurrency(order.multiPayment.card)}</span></div>
+              ` : ''}
+              ${order.amountReceived ? `<div class="info-row"><span>Amount Received:</span><span>${formatCurrency(order.amountReceived)}</span></div>` : ''}
+              ${order.changeGiven ? `<div class="info-row"><span>Change:</span><span>${formatCurrency(order.changeGiven)}</span></div>` : ''}
+            </div>` : ''}
           </div>
           <div class="footer">
             <p>Thank you for your visit!</p>
+            <p style="font-size: 10px; margin-top: 5px;">Powered by AI Studio</p>
           </div>
         </body>
       </html>
@@ -363,6 +393,7 @@ export default function POS({ onClose }: POSProps) {
       const total = currentOrderItems.reduce((sum, { item, quantity }) => sum + (item.price * quantity), 0);
       const orderData: any = {
         userId: user?.uid || 'walk-in',
+        waiter: user?.displayName || user?.email || 'Staff',
         items: currentOrderItems.map(({ item, quantity }) => ({
           itemId: item.id,
           name: item.name,
@@ -372,6 +403,8 @@ export default function POS({ onClose }: POSProps) {
         total,
         status: editingOrder ? editingOrder.status : 'confirmed',
         orderType: orderTypeInput,
+        driverId: orderTypeInput === 'delivery' ? driverIdInput : null,
+        driverName: orderTypeInput === 'delivery' ? drivers.find(d => d.id === driverIdInput)?.name || null : null,
         tableNumber: selectedTable?.name || null,
         tableId: selectedTable?.id || null,
         notes: noteInput,
@@ -504,6 +537,16 @@ export default function POS({ onClose }: POSProps) {
         { accountId: 'sales', accountName: 'Sales Revenue', debit: 0, credit: amountToPay }
       ];
 
+      const currentPayments = settlingOrder.payments || [];
+      const newPayment = {
+        method: paymentMethod,
+        amount: amountToPay,
+        timestamp: new Date().toISOString(),
+        cashAmount: cashAmount,
+        cardAmount: cardAmount
+      };
+      const updatedPayments = [...currentPayments, newPayment];
+
       if (isSplitByItem) {
         // Partial payment by item
         const remainingItems = [...settlingOrder.items];
@@ -524,6 +567,7 @@ export default function POS({ onClose }: POSProps) {
           await updateDoc(doc(db, 'orders', settlingOrder.id), {
             status: 'finalized',
             paymentMethod,
+            payments: updatedPayments,
             amountReceived: amount,
             changeGiven: change,
             items: [],
@@ -541,6 +585,7 @@ export default function POS({ onClose }: POSProps) {
           await updateDoc(doc(db, 'orders', settlingOrder.id), {
             items: remainingItems,
             total: newTotal,
+            payments: updatedPayments,
             notes: (settlingOrder.notes || '') + `\n[Partial Payment: ${formatCurrency(amountToPay)}]`
           });
         }
@@ -558,7 +603,7 @@ export default function POS({ onClose }: POSProps) {
         // Formal Journal Entry
         await addDoc(collection(db, 'journal_entries'), {
           date: new Date().toISOString().split('T')[0],
-          reference: `POS-${settlingOrder.id.slice(-4).toUpperCase()}-P`,
+          reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           lines: journalLines
@@ -581,6 +626,7 @@ export default function POS({ onClose }: POSProps) {
           await updateDoc(doc(db, 'orders', settlingOrder.id), {
             status: 'finalized',
             paymentMethod,
+            payments: updatedPayments,
             amountReceived: amount,
             changeGiven: change,
             total: 0,
@@ -595,6 +641,7 @@ export default function POS({ onClose }: POSProps) {
         } else {
           await updateDoc(doc(db, 'orders', settlingOrder.id), {
             total: remainingTotal,
+            payments: updatedPayments,
             notes: (settlingOrder.notes || '') + `\n[Partial Payment: ${formatCurrency(amountToPay)}]`
           });
         }
@@ -611,7 +658,7 @@ export default function POS({ onClose }: POSProps) {
         // Formal Journal Entry
         await addDoc(collection(db, 'journal_entries'), {
           date: new Date().toISOString().split('T')[0],
-          reference: `POS-${settlingOrder.id.slice(-4).toUpperCase()}-P`,
+          reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           lines: journalLines
@@ -628,6 +675,7 @@ export default function POS({ onClose }: POSProps) {
         await updateDoc(doc(db, 'orders', settlingOrder.id), {
           status: 'finalized',
           paymentMethod,
+          payments: updatedPayments,
           amountReceived: amount,
           changeGiven: change,
           completedAt: serverTimestamp()
@@ -653,7 +701,7 @@ export default function POS({ onClose }: POSProps) {
         // Formal Journal Entry
         await addDoc(collection(db, 'journal_entries'), {
           date: new Date().toISOString().split('T')[0],
-          reference: `POS-${settlingOrder.id.slice(-4).toUpperCase()}`,
+          reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           lines: journalLines
@@ -800,8 +848,21 @@ export default function POS({ onClose }: POSProps) {
 
   const handleUpdateOrderDetails = async () => {
     if (!activeOrder) return;
-    await updateOrderField(activeOrder.id, 'orderType', orderTypeInput);
-    setIsUpdateOrderModalOpen(false);
+    try {
+      const updates: any = { orderType: orderTypeInput };
+      if (orderTypeInput === 'delivery' && driverIdInput) {
+        const driver = drivers.find(d => d.id === driverIdInput);
+        updates.driverId = driverIdInput;
+        updates.driverName = driver?.name || '';
+      } else {
+        updates.driverId = deleteField();
+        updates.driverName = deleteField();
+      }
+      await updateDoc(doc(db, 'orders', activeOrder.id), updates);
+      setIsUpdateOrderModalOpen(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `orders/${activeOrder.id}`);
+    }
   };
 
   const handleChangeTable = async () => {
@@ -834,7 +895,11 @@ export default function POS({ onClose }: POSProps) {
     }
   };
 
-  const filteredOrders = filter === 'all' ? orders : orders.filter(o => o.status === filter);
+  const filteredOrders = orders.filter(o => {
+    const statusMatch = filter === 'all' || o.status === filter;
+    const typeMatch = orderTypeFilter === 'all' || o.orderType === orderTypeFilter;
+    return statusMatch && typeMatch;
+  });
 
   const getStatusColor = (status: Order['status']) => {
     switch (status) {
@@ -875,13 +940,13 @@ export default function POS({ onClose }: POSProps) {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 flex flex-col overflow-hidden">
+    <div className="min-h-screen bg-background flex flex-col overflow-hidden text-foreground">
       {/* POS Header */}
-      <div className="bg-white border-b border-zinc-200 px-6 py-4 flex items-center justify-between shadow-sm z-10 relative">
+      <div className="bg-card border-b border-border px-6 py-4 flex items-center justify-between shadow-sm z-10 relative">
         <div className="flex items-center gap-4">
           <button 
             onClick={onClose}
-            className="p-2 hover:bg-zinc-100 rounded-xl text-zinc-500 transition-all"
+            className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-all"
           >
             <ArrowLeft size={24} />
           </button>
@@ -893,32 +958,48 @@ export default function POS({ onClose }: POSProps) {
               referrerPolicy="no-referrer"
             />
             <div>
-              <h1 className="text-xl font-black text-zinc-900 tracking-tight leading-none">POS SYSTEM</h1>
-              <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest">Live Order Management</p>
+              <h1 className="text-xl font-black text-foreground tracking-tight leading-none">POS SYSTEM</h1>
+              <p className="text-[8px] font-bold text-muted-foreground uppercase tracking-widest">Live Order Management</p>
             </div>
           </div>
         </div>
 
-        <div className="flex bg-zinc-100 p-1.5 rounded-xl overflow-x-auto max-w-2xl shadow-inner border border-zinc-200/50">
-          {(['all', 'pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized'] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => setFilter(s)}
-              className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
-                filter === s ? 'bg-white text-primary shadow-sm border border-zinc-200/50' : 'text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50'
-              }`}
-            >
-              {s.replace('-', ' ')}
-            </button>
-          ))}
+        <div className="flex flex-col gap-2">
+          <div className="flex bg-muted p-1 rounded-lg overflow-x-auto max-w-xl shadow-inner border border-border/50">
+            {(['all', 'pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setFilter(s)}
+                className={`px-3 py-1.5 rounded-md text-[9px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
+                  filter === s ? 'bg-card text-primary shadow-sm border border-border/50' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                }`}
+              >
+                {s.replace('-', ' ')}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex bg-muted p-1 rounded-lg overflow-x-auto max-w-xl shadow-inner border border-border/50">
+            {(['all', 'dine-in', 'take-out', 'delivery', 'pickup'] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setOrderTypeFilter(t)}
+                className={`px-3 py-1.5 rounded-md text-[9px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
+                  orderTypeFilter === t ? 'bg-card text-primary shadow-sm border border-border/50' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                }`}
+              >
+                {t.replace('-', ' ')}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex items-center gap-4">
           <div className="text-right hidden md:block">
-            <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Active Orders</p>
-            <p className="text-xl font-black text-zinc-900">{orders.length}</p>
+            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Active Orders</p>
+            <p className="text-xl font-black text-foreground">{orders.length}</p>
           </div>
-          <div className="w-px h-8 bg-zinc-200 hidden md:block"></div>
+          <div className="w-px h-8 bg-border hidden md:block"></div>
           <button 
             onClick={() => {
               setOrderTypeInput('take-out');
@@ -926,9 +1007,20 @@ export default function POS({ onClose }: POSProps) {
               setPosStep('menu');
               setIsNewOrderModalOpen(true);
             }}
-            className="bg-zinc-900 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-black/10 hover:bg-zinc-800 transition-all hover:scale-105 active:scale-95"
+            className="bg-primary text-primary-foreground px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-black/10 hover:bg-primary/90 transition-all hover:scale-105 active:scale-95"
           >
             <ShoppingBag size={18} /> Takeaway
+          </button>
+          <button 
+            onClick={() => {
+              setOrderTypeInput('delivery');
+              setSelectedTable(null);
+              setPosStep('menu');
+              setIsNewOrderModalOpen(true);
+            }}
+            className="bg-primary/10 text-primary px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-primary/5 hover:bg-primary/20 transition-all hover:scale-105 active:scale-95"
+          >
+            <Truck size={18} /> Delivery
           </button>
           <button 
             onClick={() => {
@@ -936,7 +1028,7 @@ export default function POS({ onClose }: POSProps) {
               setPosStep('tables');
               setIsNewOrderModalOpen(true);
             }}
-            className="bg-primary text-white px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all hover:scale-105 active:scale-95"
+            className="bg-primary text-primary-foreground px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all hover:scale-105 active:scale-95"
           >
             <Utensils size={18} /> Dine-In
           </button>
@@ -947,36 +1039,36 @@ export default function POS({ onClose }: POSProps) {
       {isNewOrderModalOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsNewOrderModalOpen(false)} />
-          <div className="relative bg-white w-full max-w-6xl max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden">
-            <div className="p-8 border-b flex items-center justify-between">
+          <div className="relative bg-card w-full max-w-6xl max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-border">
+            <div className="p-8 border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-4">
                 {posStep === 'menu' && orderTypeInput === 'dine-in' && (
                   <button 
                     onClick={() => setPosStep('tables')}
-                    className="p-2 hover:bg-zinc-100 rounded-xl text-zinc-500 transition-all"
+                    className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-all"
                   >
                     <ArrowLeft size={24} />
                   </button>
                 )}
                 <div>
-                  <h2 className="text-2xl font-black text-zinc-900">
-                    {posStep === 'tables' ? 'Select Table' : selectedTable ? `Order for ${selectedTable.name}` : 'Takeaway Order'}
+                  <h2 className="text-2xl font-black text-foreground">
+                    {posStep === 'tables' ? 'Select Table' : selectedTable ? `Order for ${selectedTable.name}` : orderTypeInput === 'delivery' ? 'Delivery Order' : 'Takeaway Order'}
                   </h2>
-                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
                     {posStep === 'tables' ? 'Step 1: Choose a location' : 'Step 2: Select menu items'}
                   </p>
                 </div>
               </div>
-              <button onClick={() => setIsNewOrderModalOpen(false)} className="p-2 hover:bg-zinc-100 rounded-full transition-colors">
-                <Ban size={24} className="text-zinc-400" />
+              <button onClick={() => setIsNewOrderModalOpen(false)} className="p-2 hover:bg-muted rounded-full transition-colors text-muted-foreground">
+                <X size={24} />
               </button>
             </div>
 
             <div className="flex-1 flex flex-col overflow-hidden">
               {posStep === 'tables' ? (
-                <div className="flex-1 flex flex-col p-8 bg-zinc-50 m-4 rounded-[2.5rem] border-2 border-zinc-100 shadow-inner">
+                <div className="flex-1 flex flex-col p-8 bg-muted/30 m-4 rounded-[2.5rem] border-2 border-border shadow-inner">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-black text-zinc-900">Select Table</h3>
+                    <h3 className="text-xl font-black text-foreground">Select Table</h3>
                     <div className="flex items-center gap-4">
                       {isMergingTables && selectedTablesToMerge.length > 0 && (
                         <button
@@ -993,7 +1085,7 @@ export default function POS({ onClose }: POSProps) {
                             setIsMergingTables(false);
                             setSelectedTablesToMerge([]);
                           }}
-                          className="px-6 py-2 bg-primary text-white font-bold rounded-xl hover:bg-primary/90 transition-colors"
+                          className="px-6 py-2 bg-primary text-primary-foreground font-bold rounded-xl hover:bg-primary/90 transition-colors"
                         >
                           Confirm Merge ({selectedTablesToMerge.length})
                         </button>
@@ -1004,7 +1096,7 @@ export default function POS({ onClose }: POSProps) {
                           setSelectedTablesToMerge([]);
                         }}
                         className={`px-4 py-2 rounded-xl font-bold transition-colors ${
-                          isMergingTables ? 'bg-amber-100 text-amber-700' : 'bg-white border-2 border-zinc-200 text-zinc-600 hover:bg-zinc-100'
+                          isMergingTables ? 'bg-amber-500/10 text-amber-500' : 'bg-card border-2 border-border text-muted-foreground hover:bg-muted'
                         }`}
                       >
                         {isMergingTables ? 'Cancel Merge' : 'Merge Tables'}
@@ -1015,11 +1107,11 @@ export default function POS({ onClose }: POSProps) {
                   <div className="flex-1 overflow-auto custom-scrollbar">
                     {tables.length === 0 ? (
                       <div className="flex flex-col items-center justify-center text-center h-full">
-                        <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
-                          <Layout className="text-zinc-300" size={40} />
+                        <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mb-4">
+                          <Layout className="text-muted-foreground/30" size={40} />
                         </div>
-                        <h3 className="text-xl font-bold text-zinc-900">No Tables Configured</h3>
-                        <p className="text-zinc-500 max-w-xs mt-2">Please configure your restaurant layout in the Admin Panel's Tables section first.</p>
+                        <h3 className="text-xl font-bold text-foreground">No Tables Configured</h3>
+                        <p className="text-muted-foreground max-w-xs mt-2">Please configure your restaurant layout in the Admin Panel's Tables section first.</p>
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
@@ -1043,16 +1135,16 @@ export default function POS({ onClose }: POSProps) {
                               }}
                               className={`aspect-square flex flex-col items-center justify-center transition-all shadow-sm select-none rounded-2xl border-2 ${
                                 table.status === 'occupied' 
-                                  ? 'bg-amber-50 border-amber-200 opacity-60 cursor-not-allowed' 
+                                  ? 'bg-amber-500/10 border-amber-500/20 opacity-60 cursor-not-allowed' 
                                   : isSelectedForMerge
                                     ? 'bg-primary/10 border-primary shadow-md scale-105'
-                                    : 'bg-white border-zinc-100 hover:border-primary/30 hover:shadow-md'
+                                    : 'bg-card border-border hover:border-primary/30 hover:shadow-md'
                               }`}
                             >
-                              <span className={`font-black text-lg ${table.status === 'occupied' ? 'text-amber-700' : isSelectedForMerge ? 'text-primary' : 'text-zinc-900'}`}>
+                              <span className={`font-black text-lg ${table.status === 'occupied' ? 'text-amber-500' : isSelectedForMerge ? 'text-primary' : 'text-foreground'}`}>
                                 {table.name}
                               </span>
-                              <span className={`text-xs font-bold mt-1 ${table.status === 'occupied' ? 'text-amber-600/80' : isSelectedForMerge ? 'text-primary/80' : 'text-zinc-400'}`}>
+                              <span className={`text-xs font-bold mt-1 ${table.status === 'occupied' ? 'text-amber-500/80' : isSelectedForMerge ? 'text-primary/80' : 'text-muted-foreground'}`}>
                                 Cap: {table.capacity}
                               </span>
                             </button>
@@ -1063,14 +1155,14 @@ export default function POS({ onClose }: POSProps) {
                   </div>
                 </div>
               ) : (
-                <>
+                <div className="flex-1 flex overflow-hidden">
                   {/* Left: Menu with Categories */}
                   <div className="flex-1 flex flex-col overflow-hidden">
-                    <div className="p-4 border-b flex gap-2 overflow-x-auto custom-scrollbar bg-zinc-50/50">
+                    <div className="p-4 border-b border-border flex gap-2 overflow-x-auto custom-scrollbar bg-muted/30">
                       <button
                         onClick={() => setSelectedCategory('all')}
                         className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                          selectedCategory === 'all' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-white text-zinc-500 hover:bg-zinc-100'
+                          selectedCategory === 'all' ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/20' : 'bg-card text-muted-foreground hover:bg-muted'
                         }`}
                       >
                         All Items
@@ -1080,7 +1172,7 @@ export default function POS({ onClose }: POSProps) {
                           key={cat.id}
                           onClick={() => setSelectedCategory(cat.id)}
                           className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                            selectedCategory === cat.id ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-white text-zinc-500 hover:bg-zinc-100'
+                            selectedCategory === cat.id ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/20' : 'bg-card text-muted-foreground hover:bg-muted'
                           }`}
                         >
                           {cat.name}
@@ -1088,7 +1180,7 @@ export default function POS({ onClose }: POSProps) {
                       ))}
                     </div>
                     <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 h-full">
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                         {menuItems
                           .filter(item => selectedCategory === 'all' || item.category === selectedCategory)
                           .map(item => (
@@ -1103,24 +1195,24 @@ export default function POS({ onClose }: POSProps) {
                                   return [...prev, { item, quantity: 1 }];
                                 });
                               }}
-                              className="bg-white rounded-2xl border border-zinc-100 hover:border-primary/30 hover:shadow-xl transition-all text-left flex flex-col overflow-hidden group"
+                              className="bg-card rounded-2xl border border-border hover:border-primary/30 hover:shadow-xl transition-all text-left flex flex-col overflow-hidden group"
                             >
-                              <div className="h-32 w-full bg-zinc-100 relative">
+                              <div className="h-32 w-full bg-muted relative">
                                 {item.image ? (
                                   <img src={item.image} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-zinc-300">
+                                  <div className="w-full h-full flex items-center justify-center text-muted-foreground/30">
                                     <Utensils size={32} />
                                   </div>
                                 )}
                               </div>
                               <div className="p-4 flex flex-col justify-between flex-1">
                                 <div>
-                                  <p className="font-bold text-zinc-900 group-hover:text-primary transition-colors line-clamp-2">{item.name}</p>
+                                  <p className="font-bold text-foreground group-hover:text-primary transition-colors line-clamp-2">{item.name}</p>
                                   {item.recipeDetails?.allergens && item.recipeDetails.allergens.length > 0 && (
                                     <div className="flex flex-wrap gap-1 mt-2">
                                       {item.recipeDetails.allergens.map((allergen, idx) => (
-                                        <span key={idx} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[10px] font-bold">
+                                        <span key={idx} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded text-[10px] font-bold">
                                           <AlertTriangle size={10} /> {allergen}
                                         </span>
                                       ))}
@@ -1136,9 +1228,9 @@ export default function POS({ onClose }: POSProps) {
                   </div>
 
                   {/* Right: Current Selection */}
-                  <div className="w-96 bg-zinc-50 p-8 flex flex-col border-l">
+                  <div className="w-96 bg-muted/30 p-8 flex flex-col border-l border-border">
                     <div className="flex items-center justify-between mb-6">
-                      <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Current Order</p>
+                      <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Current Order</p>
                       <button 
                         onClick={() => setCurrentOrderItems([])}
                         className="text-[10px] font-black text-red-500 uppercase tracking-widest hover:underline"
@@ -1148,26 +1240,26 @@ export default function POS({ onClose }: POSProps) {
                     </div>
                     <div className="flex-1 space-y-4 overflow-y-auto custom-scrollbar pr-2">
                       {currentOrderItems.map(({ item, quantity }, idx) => (
-                        <div key={idx} className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-zinc-100">
+                        <div key={idx} className="flex justify-between items-center bg-card p-4 rounded-2xl shadow-sm border border-border">
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-bold text-zinc-900 truncate">{item.name}</p>
-                            <p className="text-[10px] font-bold text-zinc-400">{formatCurrency(item.price)} each</p>
+                            <p className="text-sm font-bold text-foreground truncate">{item.name}</p>
+                            <p className="text-[10px] font-bold text-muted-foreground">{formatCurrency(item.price)} each</p>
                           </div>
                           <div className="flex items-center gap-3">
                             <button 
                               onClick={() => {
                                 setCurrentOrderItems(prev => prev.map(i => i.item.id === item.id ? { ...i, quantity: Math.max(0, i.quantity - 1) } : i).filter(i => i.quantity > 0));
                               }}
-                              className="w-8 h-8 bg-zinc-100 rounded-xl flex items-center justify-center text-zinc-500 hover:bg-zinc-200 transition-all"
+                              className="w-8 h-8 bg-muted rounded-xl flex items-center justify-center text-muted-foreground hover:bg-muted/80 transition-all"
                             >
                               -
                             </button>
-                            <span className="text-sm font-black text-zinc-900 w-4 text-center">{quantity}</span>
+                            <span className="text-sm font-black text-foreground w-4 text-center">{quantity}</span>
                             <button 
                               onClick={() => {
                                 setCurrentOrderItems(prev => prev.map(i => i.item.id === item.id ? { ...i, quantity: i.quantity + 1 } : i));
                               }}
-                              className="w-8 h-8 bg-zinc-100 rounded-xl flex items-center justify-center text-zinc-500 hover:bg-zinc-200 transition-all"
+                              className="w-8 h-8 bg-muted rounded-xl flex items-center justify-center text-muted-foreground hover:bg-muted/80 transition-all"
                             >
                               +
                             </button>
@@ -1175,8 +1267,8 @@ export default function POS({ onClose }: POSProps) {
                         </div>
                       ))}
                       {currentOrderItems.length === 0 && (
-                        <div className="h-full flex flex-col items-center justify-center text-zinc-300 gap-4">
-                          <div className="w-16 h-16 bg-white rounded-3xl flex items-center justify-center shadow-sm">
+                        <div className="h-full flex flex-col items-center justify-center text-muted-foreground/30 gap-4">
+                          <div className="w-16 h-16 bg-card rounded-3xl flex items-center justify-center shadow-sm border border-border">
                             <ShoppingBag size={32} />
                           </div>
                           <p className="text-xs font-bold uppercase tracking-widest">Empty Cart</p>
@@ -1184,15 +1276,30 @@ export default function POS({ onClose }: POSProps) {
                       )}
                     </div>
 
-                    <div className="pt-6 mt-6 border-t border-zinc-200 space-y-4">
+                    <div className="pt-6 mt-6 border-t border-border space-y-4">
+                      {orderTypeInput === 'delivery' && (
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Assign Driver</label>
+                          <select
+                            value={driverIdInput}
+                            onChange={(e) => setDriverIdInput(e.target.value)}
+                            className="w-full bg-card border border-border rounded-xl p-3 text-sm focus:border-primary outline-none font-bold text-foreground"
+                          >
+                            <option value="">Select Driver</option>
+                            {drivers.map(d => (
+                              <option key={d.id} value={d.id}>{d.name} ({d.vehicle})</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                       <textarea
                         value={noteInput}
                         onChange={(e) => setNoteInput(e.target.value)}
                         placeholder="Add order notes (e.g. allergies, special requests)..."
-                        className="w-full bg-white border border-zinc-200 rounded-xl p-3 text-sm focus:border-primary outline-none resize-none h-20"
+                        className="w-full bg-card border border-border rounded-xl p-3 text-sm focus:border-primary outline-none resize-none h-20 text-foreground"
                       />
                       <div className="flex justify-between items-center mb-6">
-                        <span className="text-xs font-bold text-zinc-400 uppercase">Total Amount</span>
+                        <span className="text-xs font-bold text-muted-foreground uppercase">Total Amount</span>
                         <span className="text-3xl font-black text-primary">
                           {formatCurrency(currentOrderItems.reduce((sum, { item, quantity }) => sum + (item.price * quantity), 0))}
                         </span>
@@ -1200,7 +1307,7 @@ export default function POS({ onClose }: POSProps) {
                       <button
                         disabled={(orderTypeInput === 'dine-in' && !selectedTable) || currentOrderItems.length === 0 || isSubmitting}
                         onClick={saveOrder}
-                        className="w-full bg-primary text-white py-5 rounded-[1.5rem] font-black uppercase tracking-widest shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
+                        className="w-full bg-primary text-primary-foreground py-5 rounded-[1.5rem] font-black uppercase tracking-widest shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
                       >
                         {isSubmitting ? (
                           <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin" />
@@ -1213,7 +1320,7 @@ export default function POS({ onClose }: POSProps) {
                       </button>
                     </div>
                   </div>
-                </>
+                </div>
               )}
             </div>
           </div>
@@ -1224,26 +1331,26 @@ export default function POS({ onClose }: POSProps) {
       {isSettlingBill && settlingOrder && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsSettlingBill(false)} />
-          <div className="relative bg-white w-full max-w-2xl rounded-[3rem] shadow-2xl overflow-hidden">
-            <div className="p-10 border-b flex items-center justify-between bg-zinc-50/50">
+          <div className="relative bg-card w-full max-w-2xl max-h-[90vh] rounded-[3rem] shadow-2xl flex flex-col border border-border">
+            <div className="p-10 border-b border-border flex items-center justify-between bg-muted/30 flex-shrink-0">
               <div>
-                <h2 className="text-3xl font-black text-zinc-900 tracking-tight">Settle Bill</h2>
-                <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Order #{settlingOrder.id.slice(-6).toUpperCase()}</p>
+                <h2 className="text-3xl font-black text-foreground tracking-tight">Settle Bill</h2>
+                <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Order #{settlingOrder.id.slice(-6).toUpperCase()}</p>
               </div>
-              <button onClick={() => setIsSettlingBill(false)} className="p-3 hover:bg-zinc-200 rounded-2xl transition-all">
-                <X size={24} className="text-zinc-400" />
+              <button onClick={() => setIsSettlingBill(false)} className="p-3 hover:bg-muted rounded-2xl transition-all">
+                <X size={24} className="text-muted-foreground" />
               </button>
             </div>
 
-            <div className="p-10 space-y-8">
+            <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar flex-1">
               {/* Payment Method Selection */}
               <div className="space-y-4">
-                <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Payment Method</p>
+                <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Payment Method</p>
                 <div className="grid grid-cols-4 gap-4">
                   <button
                     onClick={() => setPaymentMethod('cash')}
                     className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
-                      paymentMethod === 'cash' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-zinc-200'
+                      paymentMethod === 'cash' ? 'bg-emerald-500/10 border-emerald-500 text-emerald-500' : 'bg-card border-border text-muted-foreground hover:border-muted'
                     }`}
                   >
                     <Banknote size={32} />
@@ -1252,7 +1359,7 @@ export default function POS({ onClose }: POSProps) {
                   <button
                     onClick={() => setPaymentMethod('card')}
                     className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
-                      paymentMethod === 'card' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-zinc-200'
+                      paymentMethod === 'card' ? 'bg-blue-500/10 border-blue-500 text-blue-500' : 'bg-card border-border text-muted-foreground hover:border-muted'
                     }`}
                   >
                     <CreditCard size={32} />
@@ -1261,7 +1368,7 @@ export default function POS({ onClose }: POSProps) {
                   <button
                     onClick={() => setPaymentMethod('multi')}
                     className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
-                      paymentMethod === 'multi' ? 'bg-purple-50 border-purple-500 text-purple-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-zinc-200'
+                      paymentMethod === 'multi' ? 'bg-purple-500/10 border-purple-500 text-purple-500' : 'bg-card border-border text-muted-foreground hover:border-muted'
                     }`}
                   >
                     <Split size={32} />
@@ -1270,7 +1377,7 @@ export default function POS({ onClose }: POSProps) {
                   <button
                     onClick={() => setPaymentMethod('open bill')}
                     className={`p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all ${
-                      paymentMethod === 'open bill' ? 'bg-amber-50 border-amber-500 text-amber-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-zinc-200'
+                      paymentMethod === 'open bill' ? 'bg-amber-500/10 border-amber-500 text-amber-500' : 'bg-card border-border text-muted-foreground hover:border-muted'
                     }`}
                   >
                     <Receipt size={32} />
@@ -1281,22 +1388,22 @@ export default function POS({ onClose }: POSProps) {
 
               {/* Split Bill Option */}
               <div className="space-y-4">
-                <div className="flex items-center justify-between p-6 bg-zinc-50 rounded-3xl">
+                <div className="flex items-center justify-between p-6 bg-muted/30 rounded-3xl">
                   <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm">
+                    <div className="w-12 h-12 bg-card rounded-2xl flex items-center justify-center shadow-sm border border-border">
                       <Split className="text-primary" size={24} />
                     </div>
                     <div>
-                      <p className="font-black text-zinc-900 uppercase text-xs">Split Bill</p>
-                      <p className="text-[10px] font-bold text-zinc-400 uppercase">Divide total among guests</p>
+                      <p className="font-black text-foreground uppercase text-xs">Split Bill</p>
+                      <p className="text-[10px] font-bold text-muted-foreground uppercase">Divide total among guests</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
                     {isSplitBill && !isSplitByItem && (
-                      <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl border border-zinc-200">
-                        <button onClick={() => setNumberOfSplits(Math.max(2, numberOfSplits - 1))} className="text-zinc-400 hover:text-primary">-</button>
-                        <span className="font-black text-sm">{numberOfSplits}</span>
-                        <button onClick={() => setNumberOfSplits(numberOfSplits + 1)} className="text-zinc-400 hover:text-primary">+</button>
+                      <div className="flex items-center gap-3 bg-card px-4 py-2 rounded-xl border border-border">
+                        <button onClick={() => setNumberOfSplits(Math.max(2, numberOfSplits - 1))} className="text-muted-foreground hover:text-primary">-</button>
+                        <span className="font-black text-sm text-foreground">{numberOfSplits}</span>
+                        <button onClick={() => setNumberOfSplits(numberOfSplits + 1)} className="text-muted-foreground hover:text-primary">+</button>
                       </div>
                     )}
                     <button 
@@ -1307,7 +1414,7 @@ export default function POS({ onClose }: POSProps) {
                           setSelectedSplitItems([]);
                         }
                       }}
-                      className={`w-14 h-8 rounded-full transition-all relative ${isSplitBill ? 'bg-primary' : 'bg-zinc-300'}`}
+                      className={`w-14 h-8 rounded-full transition-all relative ${isSplitBill ? 'bg-primary' : 'bg-muted'}`}
                     >
                       <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${isSplitBill ? 'left-7' : 'left-1'}`} />
                     </button>
@@ -1315,22 +1422,22 @@ export default function POS({ onClose }: POSProps) {
                 </div>
 
                 {isSplitBill && (
-                  <div className="flex gap-2 p-1 bg-zinc-100 rounded-2xl">
+                  <div className="flex gap-2 p-1 bg-muted rounded-2xl">
                     <button 
                       onClick={() => { setIsSplitByItem(false); setIsSplitByAmount(false); setSelectedSplitItems([]); }}
-                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(!isSplitByItem && !isSplitByAmount) ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'}`}
+                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(!isSplitByItem && !isSplitByAmount) ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground'}`}
                     >
                       Equal Split
                     </button>
                     <button 
                       onClick={() => { setIsSplitByItem(false); setIsSplitByAmount(true); setSelectedSplitItems([]); }}
-                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isSplitByAmount ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'}`}
+                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isSplitByAmount ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground'}`}
                     >
                       By Amount
                     </button>
                     <button 
                       onClick={() => { setIsSplitByItem(true); setIsSplitByAmount(false); }}
-                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isSplitByItem ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'}`}
+                      className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isSplitByItem ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground'}`}
                     >
                       By Item
                     </button>
@@ -1338,35 +1445,35 @@ export default function POS({ onClose }: POSProps) {
                 )}
 
                 {isSplitBill && isSplitByAmount && (
-                  <div className="space-y-3 p-6 bg-zinc-50 rounded-3xl">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Amount to Pay Now</label>
+                  <div className="space-y-3 p-6 bg-muted/30 rounded-3xl">
+                    <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Amount to Pay Now</label>
                     <div className="relative">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">AED</div>
                       <input
                         type="number"
                         value={splitAmount}
                         onChange={(e) => setSplitAmount(e.target.value)}
                         placeholder="0.00"
-                        className="w-full bg-white border-2 border-zinc-100 rounded-2xl pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                        className="w-full bg-card border-2 border-border rounded-2xl pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all text-foreground"
                       />
                     </div>
-                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Remaining: {formatCurrency(settlingOrder.total - (parseFloat(splitAmount) * 100 || 0))}</p>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Remaining: {formatCurrency(settlingOrder.total - (parseFloat(splitAmount) * 100 || 0))}</p>
                   </div>
                 )}
 
                 {isSplitBill && isSplitByItem && (
-                  <div className="space-y-3 p-6 bg-zinc-50 rounded-3xl">
-                    <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Select Items to Pay</p>
+                  <div className="space-y-3 p-6 bg-muted/30 rounded-3xl">
+                    <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Select Items to Pay</p>
                     <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
                       {settlingOrder.items.map((item, idx) => {
                         const selected = selectedSplitItems.find(si => si.itemId === item.itemId);
                         const selectedQty = selected?.quantity || 0;
                         
                         return (
-                          <div key={idx} className="flex items-center justify-between p-3 bg-white rounded-2xl border border-zinc-100">
+                          <div key={idx} className="flex items-center justify-between p-3 bg-card rounded-2xl border border-border">
                             <div className="flex-1">
-                              <p className="text-sm font-bold text-zinc-900">{item.name}</p>
-                              <p className="text-[10px] font-bold text-zinc-400">{formatCurrency(item.price)} each</p>
+                              <p className="text-sm font-bold text-foreground">{item.name}</p>
+                              <p className="text-[10px] font-bold text-muted-foreground">{formatCurrency(item.price)} each</p>
                             </div>
                             <div className="flex items-center gap-3">
                               <button 
@@ -1382,11 +1489,11 @@ export default function POS({ onClose }: POSProps) {
                                   }
                                   setSelectedSplitItems(newSelected);
                                 }}
-                                className="w-8 h-8 flex items-center justify-center bg-zinc-100 text-zinc-400 rounded-lg hover:bg-zinc-200"
+                                className="w-8 h-8 flex items-center justify-center bg-muted text-muted-foreground rounded-lg hover:bg-muted/80"
                               >
                                 -
                               </button>
-                              <span className="w-8 text-center font-black text-sm">{selectedQty} / {item.quantity}</span>
+                              <span className="w-8 text-center font-black text-sm text-foreground">{selectedQty} / {item.quantity}</span>
                               <button 
                                 onClick={() => {
                                   const newSelected = [...selectedSplitItems];
@@ -1417,22 +1524,22 @@ export default function POS({ onClose }: POSProps) {
               {paymentMethod === 'cash' && (
                 <div className="grid grid-cols-2 gap-8">
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Amount Received</label>
+                    <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Amount Received</label>
                     <div className="relative">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">AED</div>
                       <input
                         type="number"
                         value={amountReceived}
                         onChange={(e) => setAmountReceived(e.target.value)}
                         placeholder="0.00"
-                        className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                        className="w-full bg-card border-2 border-border rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black text-foreground focus:border-primary outline-none transition-all"
                       />
                     </div>
                   </div>
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Change to Return</label>
-                    <div className="bg-emerald-50 border-2 border-emerald-100 rounded-[1.5rem] px-6 py-4">
-                      <p className="text-2xl font-black text-emerald-600">
+                    <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Change to Return</label>
+                    <div className="bg-emerald-500/10 border-2 border-emerald-500/20 rounded-[1.5rem] px-6 py-4">
+                      <p className="text-2xl font-black text-emerald-500">
                         {amountReceived ? formatCurrency(Math.max(0, parseFloat(amountReceived) * 100 - (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 || 0 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total))) : formatCurrency(0)}
                       </p>
                     </div>
@@ -1444,35 +1551,35 @@ export default function POS({ onClose }: POSProps) {
               {paymentMethod === 'multi' && (
                 <div className="grid grid-cols-2 gap-8">
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Cash Received</label>
+                    <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Cash Received</label>
                     <div className="relative">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">AED</div>
                       <input
                         type="number"
                         value={multiPayment.cash}
                         onChange={(e) => setMultiPayment({ ...multiPayment, cash: e.target.value })}
                         placeholder="0.00"
-                        className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                        className="w-full bg-card border-2 border-border rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all text-foreground"
                       />
                     </div>
                   </div>
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Card Amount</label>
+                    <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Card Amount</label>
                     <div className="relative">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-bold">AED</div>
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">AED</div>
                       <input
                         type="number"
                         value={multiPayment.card}
                         onChange={(e) => setMultiPayment({ ...multiPayment, card: e.target.value })}
                         placeholder="0.00"
-                        className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all"
+                        className="w-full bg-card border-2 border-border rounded-[1.5rem] pl-14 pr-6 py-4 text-xl font-black focus:border-primary outline-none transition-all text-foreground"
                       />
                     </div>
                   </div>
                   <div className="col-span-2 space-y-3">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Change to Return</label>
-                    <div className="bg-emerald-50 border-2 border-emerald-100 rounded-[1.5rem] px-6 py-4">
-                      <p className="text-2xl font-black text-emerald-600">
+                    <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Change to Return</label>
+                    <div className="bg-emerald-500/10 border-2 border-emerald-500/20 rounded-[1.5rem] px-6 py-4">
+                      <p className="text-2xl font-black text-emerald-500">
                         {formatCurrency(Math.max(0, ((parseFloat(multiPayment.cash) || 0) + (parseFloat(multiPayment.card) || 0)) * 100 - (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 || 0 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total)))}
                       </p>
                     </div>
@@ -1481,9 +1588,9 @@ export default function POS({ onClose }: POSProps) {
               )}
 
               {/* Summary */}
-              <div className="pt-8 border-t border-zinc-100 flex items-center justify-between">
+              <div className="pt-8 border-t border-border flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Total to Pay</p>
+                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Total to Pay</p>
                   <p className="text-4xl font-black text-primary">
                     {isSplitByItem 
                       ? formatCurrency(selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0))
@@ -1492,9 +1599,9 @@ export default function POS({ onClose }: POSProps) {
                         : isSplitBill 
                           ? formatCurrency(settlingOrder.total / numberOfSplits) 
                           : formatCurrency(settlingOrder.total)}
-                    {isSplitBill && !isSplitByItem && !isSplitByAmount && <span className="text-sm text-zinc-400 ml-2 font-bold">per person</span>}
-                    {isSplitByItem && <span className="text-sm text-zinc-400 ml-2 font-bold">selected items</span>}
-                    {isSplitByAmount && <span className="text-sm text-zinc-400 ml-2 font-bold">custom amount</span>}
+                    {isSplitBill && !isSplitByItem && !isSplitByAmount && <span className="text-sm text-muted-foreground ml-2 font-bold">per person</span>}
+                    {isSplitByItem && <span className="text-sm text-muted-foreground ml-2 font-bold">selected items</span>}
+                    {isSplitByAmount && <span className="text-sm text-muted-foreground ml-2 font-bold">custom amount</span>}
                   </p>
                 </div>
                 <div className="flex gap-4">
@@ -1506,7 +1613,7 @@ export default function POS({ onClose }: POSProps) {
                         printBill(settlingOrder);
                       }
                     }}
-                    className="bg-zinc-100 text-zinc-900 px-8 py-5 rounded-[2rem] font-black uppercase tracking-widest hover:bg-zinc-200 transition-all flex items-center justify-center gap-3"
+                    className="bg-muted text-foreground px-8 py-5 rounded-[2rem] font-black uppercase tracking-widest hover:bg-muted/80 transition-all flex items-center justify-center gap-3"
                   >
                     <Printer size={20} />
                     Print Bill
@@ -1519,10 +1626,10 @@ export default function POS({ onClose }: POSProps) {
                       (paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total))) || 
                       isSubmitting
                     }
-                    className="bg-zinc-900 text-white px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl shadow-black/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
+                    className="bg-primary text-primary-foreground px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl shadow-primary/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
                   >
                     {isSubmitting ? (
-                      <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin" />
+                      <div className="w-6 h-6 border-4 border-primary-foreground border-t-transparent rounded-full animate-spin" />
                     ) : (
                       'Finalize Payment'
                     )}
@@ -1538,20 +1645,20 @@ export default function POS({ onClose }: POSProps) {
       <div className="flex-1 overflow-y-auto p-6">
         {filteredOrders.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center space-y-4">
-            <div className="w-24 h-24 bg-zinc-100 rounded-full flex items-center justify-center">
-              <ShoppingBag size={48} className="text-zinc-300" />
+            <div className="w-24 h-24 bg-muted rounded-full flex items-center justify-center">
+              <ShoppingBag size={48} className="text-muted-foreground/30" />
             </div>
             <div>
-              <h3 className="text-xl font-black text-zinc-900">No Active Orders</h3>
-              <p className="text-zinc-500 font-medium">Click "New Dine-In" or "Takeaway" to start a new order.</p>
+              <h3 className="text-xl font-black text-foreground">No Active Orders</h3>
+              <p className="text-muted-foreground font-medium">Click "New Dine-In" or "Takeaway" to start a new order.</p>
             </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {filteredOrders.map(order => (
-              <div key={order.id} className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all relative">
+              <div key={order.id} className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all relative">
                 {/* Header */}
-                <div className="p-4 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
+                <div className="p-4 bg-muted/30 border-b border-border flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className={`text-white p-1.5 rounded-lg ${order.orderType === 'dine-in' ? 'bg-emerald-500' : 'bg-blue-500'}`}>
                       {order.orderType === 'dine-in' ? <Utensils size={14} /> : <ShoppingBag size={14} />}
@@ -1559,19 +1666,19 @@ export default function POS({ onClose }: POSProps) {
                     <span className={`text-[10px] font-black uppercase tracking-widest ${order.orderType === 'dine-in' ? 'text-emerald-600' : 'text-blue-600'}`}>{order.orderType}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-zinc-900">{order.orderType === 'dine-in' ? `Table ${order.tableNumber}` : `#${order.id.slice(-4).toUpperCase()}`}</span>
+                    <span className="text-xs font-black text-foreground">{order.orderType === 'dine-in' ? `Table ${order.tableNumber}` : `#${order.id.slice(-4).toUpperCase()}`}</span>
                     <button 
                       onClick={() => setOpenDropdownId(openDropdownId === order.id ? null : order.id)}
-                      className="p-1 hover:bg-zinc-200 rounded-lg transition-colors"
+                      className="p-1 hover:bg-muted rounded-lg transition-colors"
                     >
-                      <ChevronDown size={16} className={`text-zinc-500 transition-transform ${openDropdownId === order.id ? 'rotate-180' : ''}`} />
+                      <ChevronDown size={16} className={`text-muted-foreground transition-transform ${openDropdownId === order.id ? 'rotate-180' : ''}`} />
                     </button>
                   </div>
                 </div>
                   
                 {/* Expanded Menu */}
                 {openDropdownId === order.id && (
-                  <div className="bg-zinc-50 border-b border-zinc-100 grid grid-cols-2 gap-1 p-2">
+                  <div className="bg-muted/30 border-b border-border grid grid-cols-2 gap-1 p-2">
                     {[
                       { icon: User, label: 'Covers', onClick: () => { setActiveOrder(order); setOccupancyInput(order.occupancy?.toString() || ''); setIsGuestModalOpen(true); setOpenDropdownId(null); } },
                       { icon: Users, label: 'Guest', onClick: async () => { 
@@ -1616,10 +1723,10 @@ export default function POS({ onClose }: POSProps) {
                       <button 
                         key={idx}
                         onClick={action.onClick}
-                        className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-200 rounded-lg transition-colors text-left"
+                        className="flex items-center gap-2 px-3 py-2 hover:bg-muted rounded-lg transition-colors text-left group"
                       >
-                        <action.icon size={14} className="text-zinc-500" />
-                        <span className="text-[10px] font-bold text-zinc-700 uppercase">{action.label}</span>
+                        <action.icon size={14} className="text-muted-foreground group-hover:text-primary" />
+                        <span className="text-[10px] font-bold text-muted-foreground group-hover:text-foreground uppercase">{action.label}</span>
                       </button>
                     ))}
                   </div>
@@ -1632,41 +1739,41 @@ export default function POS({ onClose }: POSProps) {
                 </div>
 
                 {/* Items List */}
-                <div className="flex-1 p-4 overflow-y-auto bg-zinc-50/50">
+                <div className="flex-1 p-4 overflow-y-auto bg-muted/10">
                   <div className="space-y-3">
                     {order.notes && (
-                      <div className="p-3 bg-amber-50 rounded-xl border border-amber-200/50">
-                        <p className="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-1">Order Notes</p>
-                        <p className="text-xs font-bold text-amber-900">{order.notes}</p>
+                      <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20">
+                        <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-1">Order Notes</p>
+                        <p className="text-xs font-bold text-amber-200">{order.notes}</p>
                       </div>
                     )}
                     {order.items.map((item, idx) => (
                       <div key={idx} className="flex justify-between items-start">
                         <div className="flex gap-3">
-                          <span className="font-black text-zinc-400">{item.quantity}x</span>
+                          <span className="font-black text-muted-foreground">{item.quantity}x</span>
                           <div>
-                            <p className="font-bold text-sm text-zinc-900">{item.name}</p>
-                            {item.notes && <p className="text-xs text-zinc-500 mt-0.5">{item.notes}</p>}
+                            <p className="font-bold text-sm text-foreground">{item.name}</p>
+                            {item.notes && <p className="text-xs text-muted-foreground mt-0.5">{item.notes}</p>}
                           </div>
                         </div>
-                        <span className="font-bold text-sm">{formatCurrency(item.price * item.quantity)}</span>
+                        <span className="font-bold text-sm text-foreground">{formatCurrency(item.price * item.quantity)}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
                 {/* Totals */}
-                <div className="p-4 bg-white border-t border-zinc-100">
+                <div className="p-4 bg-card border-t border-border">
                   {order.discount && order.discount > 0 ? (
                     <>
                       <div className="flex justify-between items-center mb-1">
-                        <span className="text-[10px] font-bold text-zinc-400 uppercase">Subtotal</span>
-                        <span className="text-sm font-bold text-zinc-600">
+                        <span className="text-[10px] font-bold text-muted-foreground uppercase">Subtotal</span>
+                        <span className="text-sm font-bold text-muted-foreground">
                           {formatCurrency(order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0))}
                         </span>
                       </div>
                       <div className="flex justify-between items-center mb-2">
-                        <span className="text-[10px] font-bold text-zinc-400 uppercase">
+                        <span className="text-[10px] font-bold text-muted-foreground uppercase">
                           Discount {order.discountType === 'percentage' ? `(${order.discount}%)` : ''}
                         </span>
                         <span className="text-sm font-black text-red-500">
@@ -1679,13 +1786,13 @@ export default function POS({ onClose }: POSProps) {
                     </>
                   ) : null}
                   <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-zinc-500 uppercase">Total</span>
-                    <span className="text-lg font-black text-emerald-600">{formatCurrency(order.total)}</span>
+                    <span className="text-xs font-bold text-muted-foreground uppercase">Total</span>
+                    <span className="text-lg font-black text-emerald-500">{formatCurrency(order.total)}</span>
                   </div>
                 </div>
 
                 {/* Footer Buttons */}
-                <div className="p-2 grid grid-cols-2 gap-2 bg-zinc-50 border-t border-zinc-100">
+                <div className="p-2 grid grid-cols-2 gap-2 bg-muted/30 border-t border-border">
                   {order.status !== 'finalized' ? (
                     <button 
                       onClick={() => updateOrderStatus(order.id, 'cancelled')}
@@ -1721,7 +1828,7 @@ export default function POS({ onClose }: POSProps) {
                   ) : (
                     <button 
                       disabled
-                      className="flex flex-col items-center gap-1 bg-zinc-300 text-white py-2 rounded-xl cursor-not-allowed"
+                      className="flex flex-col items-center gap-1 bg-muted text-muted-foreground py-2 rounded-xl cursor-not-allowed"
                     >
                       <CheckCircle2 size={16} />
                       <span className="text-[8px] font-black uppercase tracking-widest">Completed</span>
@@ -1736,19 +1843,19 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Guest Modal (Covers) */}
       {isGuestModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-xl font-black">Number of Covers</h3>
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
+            <h3 className="text-xl font-black text-foreground">Number of Covers</h3>
             <input
               type="number"
               value={occupancyInput}
               onChange={(e) => setOccupancyInput(e.target.value)}
-              className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-xl px-4 py-3 font-bold focus:border-primary outline-none"
+              className="w-full bg-muted/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
               placeholder="Enter number of guests"
             />
             <div className="flex gap-2">
-              <button onClick={() => setIsGuestModalOpen(false)} className="flex-1 py-3 bg-zinc-100 rounded-xl font-bold">Cancel</button>
-              <button onClick={handleUpdateGuest} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold">Save</button>
+              <button onClick={() => setIsGuestModalOpen(false)} className="flex-1 py-3 bg-muted text-muted-foreground hover:bg-muted/80 rounded-xl font-bold transition-all">Cancel</button>
+              <button onClick={handleUpdateGuest} className="flex-1 py-3 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl font-bold transition-all">Save</button>
             </div>
           </div>
         </div>
@@ -1756,15 +1863,15 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Update Order Details Modal */}
       {isUpdateOrderModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-xl font-black">Update Order Details</h3>
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
+            <h3 className="text-xl font-black text-foreground">Update Order Details</h3>
             <div className="space-y-2">
-              <label className="text-xs font-bold text-zinc-500 uppercase">Order Type</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase">Order Type</label>
               <select
                 value={orderTypeInput}
                 onChange={(e) => setOrderTypeInput(e.target.value as Order['orderType'])}
-                className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-xl px-4 py-3 font-bold focus:border-primary outline-none"
+                className="w-full bg-muted/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
               >
                 <option value="dine-in">Dine-In</option>
                 <option value="take-out">Take-Out</option>
@@ -1772,9 +1879,24 @@ export default function POS({ onClose }: POSProps) {
                 <option value="pickup">Pickup</option>
               </select>
             </div>
+            {orderTypeInput === 'delivery' && (
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-muted-foreground uppercase">Assign Driver</label>
+                <select
+                  value={driverIdInput}
+                  onChange={(e) => setDriverIdInput(e.target.value)}
+                  className="w-full bg-muted/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
+                >
+                  <option value="">Select Driver</option>
+                  {drivers.map(d => (
+                    <option key={d.id} value={d.id}>{d.name} ({d.vehicle})</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="flex gap-2">
-              <button onClick={() => setIsUpdateOrderModalOpen(false)} className="flex-1 py-3 bg-zinc-100 rounded-xl font-bold">Cancel</button>
-              <button onClick={handleUpdateOrderDetails} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold">Save</button>
+              <button onClick={() => setIsUpdateOrderModalOpen(false)} className="flex-1 py-3 bg-muted text-muted-foreground hover:bg-muted/80 rounded-xl font-bold transition-all">Cancel</button>
+              <button onClick={handleUpdateOrderDetails} className="flex-1 py-3 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl font-bold transition-all">Save</button>
             </div>
           </div>
         </div>
@@ -1782,15 +1904,15 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Discount Modal */}
       {isDiscountModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-xl font-black">Apply Discount</h3>
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
+            <h3 className="text-xl font-black text-foreground">Apply Discount</h3>
             {discountError && <p className="text-red-500 text-sm font-bold">{discountError}</p>}
-            <div className="flex gap-2 p-1 bg-zinc-100 rounded-xl">
+            <div className="flex gap-2 p-1 bg-muted rounded-xl">
               <button
                 onClick={() => setDiscountTypeInput('amount')}
                 className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all ${
-                  discountTypeInput === 'amount' ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'
+                  discountTypeInput === 'amount' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
                 }`}
               >
                 Amount
@@ -1798,7 +1920,7 @@ export default function POS({ onClose }: POSProps) {
               <button
                 onClick={() => setDiscountTypeInput('percentage')}
                 className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all ${
-                  discountTypeInput === 'percentage' ? 'bg-white text-primary shadow-sm' : 'text-zinc-500'
+                  discountTypeInput === 'percentage' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
                 }`}
               >
                 Percentage
@@ -1808,19 +1930,19 @@ export default function POS({ onClose }: POSProps) {
               type="number"
               value={discountInput}
               onChange={(e) => setDiscountInput(e.target.value)}
-              className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-xl px-4 py-3 font-bold focus:border-primary outline-none"
+              className="w-full bg-muted/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
               placeholder={discountTypeInput === 'amount' ? "Enter discount amount" : "Enter discount percentage (%)"}
             />
             <input
               type="password"
               value={clearanceCodeInput}
               onChange={(e) => setClearanceCodeInput(e.target.value)}
-              className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-xl px-4 py-3 font-bold focus:border-primary outline-none"
+              className="w-full bg-muted/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
               placeholder="Manager Clearance Code (1234)"
             />
             <div className="flex gap-2">
-              <button onClick={() => setIsDiscountModalOpen(false)} className="flex-1 py-3 bg-zinc-100 rounded-xl font-bold">Cancel</button>
-              <button onClick={handleUpdateDiscount} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold">Save</button>
+              <button onClick={() => setIsDiscountModalOpen(false)} className="flex-1 py-3 bg-muted text-muted-foreground hover:bg-muted/80 rounded-xl font-bold transition-all">Cancel</button>
+              <button onClick={handleUpdateDiscount} className="flex-1 py-3 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl font-bold transition-all">Save</button>
             </div>
           </div>
         </div>
@@ -1828,18 +1950,18 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Note Modal */}
       {isNoteModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-xl font-black">Modify Note</h3>
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
+            <h3 className="text-xl font-black text-foreground">Modify Note</h3>
             <textarea
               value={noteInput}
               onChange={(e) => setNoteInput(e.target.value)}
-              className="w-full bg-zinc-50 border-2 border-zinc-100 rounded-xl px-4 py-3 font-bold focus:border-primary outline-none min-h-[100px]"
+              className="w-full bg-muted/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none min-h-[100px] transition-all"
               placeholder="Enter order note..."
             />
             <div className="flex gap-2">
-              <button onClick={() => setIsNoteModalOpen(false)} className="flex-1 py-3 bg-zinc-100 rounded-xl font-bold">Cancel</button>
-              <button onClick={handleUpdateNote} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold">Save</button>
+              <button onClick={() => setIsNoteModalOpen(false)} className="flex-1 py-3 bg-muted text-muted-foreground hover:bg-muted/80 rounded-xl font-bold transition-all">Cancel</button>
+              <button onClick={handleUpdateNote} className="flex-1 py-3 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl font-bold transition-all">Save</button>
             </div>
           </div>
         </div>
@@ -1847,9 +1969,9 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Change Table Modal */}
       {isChangeTableModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-xl font-black">Change Table</h3>
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-2xl w-full max-sm p-6 space-y-4 shadow-2xl">
+            <h3 className="text-xl font-black text-foreground">Change Table</h3>
             <div className="grid grid-cols-3 gap-2 max-h-[300px] overflow-y-auto">
               {tables.filter(t => t.status === 'available' || t.id === activeOrder.tableId).map(table => (
                 <button
@@ -1858,7 +1980,7 @@ export default function POS({ onClose }: POSProps) {
                   className={`p-3 rounded-xl border-2 font-bold transition-all ${
                     newTableId === table.id 
                       ? 'border-primary bg-primary/10 text-primary' 
-                      : 'border-zinc-100 bg-zinc-50 text-zinc-600 hover:border-zinc-300'
+                      : 'border-border bg-muted/50 text-muted-foreground hover:border-muted-foreground/30'
                   }`}
                 >
                   {table.name}
@@ -1866,11 +1988,11 @@ export default function POS({ onClose }: POSProps) {
               ))}
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setIsChangeTableModalOpen(false)} className="flex-1 py-3 bg-zinc-100 rounded-xl font-bold">Cancel</button>
+              <button onClick={() => setIsChangeTableModalOpen(false)} className="flex-1 py-3 bg-muted text-muted-foreground hover:bg-muted/80 rounded-xl font-bold transition-all">Cancel</button>
               <button 
                 onClick={handleChangeTable} 
                 disabled={!newTableId || newTableId === activeOrder.tableId}
-                className="flex-1 py-3 bg-primary text-white rounded-xl font-bold disabled:opacity-50"
+                className="flex-1 py-3 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl font-bold disabled:opacity-50 transition-all"
               >
                 Save
               </button>
@@ -1881,17 +2003,17 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Customer Modal */}
       {isCustomerModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-md p-8 space-y-6 shadow-2xl">
-            <h3 className="text-2xl font-black text-zinc-900 tracking-tight">Assign Customer</h3>
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-3xl w-full max-w-md p-8 space-y-6 shadow-2xl">
+            <h3 className="text-2xl font-black text-foreground tracking-tight">Assign Customer</h3>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={20} />
               <input
                 type="text"
                 placeholder="Search by name or phone..."
                 value={customerSearch}
                 onChange={(e) => setCustomerSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary font-medium"
+                className="w-full pl-10 pr-4 py-3 bg-muted/50 border border-border rounded-xl text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary font-medium transition-all"
               />
             </div>
             <div className="max-h-64 overflow-y-auto space-y-2 custom-scrollbar pr-2">
@@ -1899,18 +2021,18 @@ export default function POS({ onClose }: POSProps) {
                 <button
                   key={customer.id}
                   onClick={() => handleAssignCustomer(customer)}
-                  className="w-full text-left p-4 bg-zinc-50 hover:bg-zinc-100 rounded-xl transition-colors border border-zinc-200"
+                  className="w-full text-left p-4 bg-muted/30 hover:bg-muted/50 rounded-xl transition-colors border border-border"
                 >
-                  <p className="font-bold text-zinc-900">{customer.name}</p>
-                  <p className="text-sm text-zinc-500">{customer.phone}</p>
+                  <p className="font-bold text-foreground">{customer.name}</p>
+                  <p className="text-sm text-muted-foreground">{customer.phone}</p>
                 </button>
               ))}
               {customers.length === 0 && (
-                <p className="text-center text-zinc-500 py-4">No customers found.</p>
+                <p className="text-center text-muted-foreground py-4">No customers found.</p>
               )}
             </div>
             <div className="flex gap-3">
-              <button onClick={() => { setIsCustomerModalOpen(false); setCustomerSearch(''); }} className="flex-1 py-3 bg-zinc-100 rounded-xl font-bold text-zinc-700 hover:bg-zinc-200 transition-colors">Cancel</button>
+              <button onClick={() => { setIsCustomerModalOpen(false); setCustomerSearch(''); }} className="flex-1 py-3 bg-muted text-muted-foreground hover:bg-muted/80 rounded-xl font-bold transition-colors">Cancel</button>
             </div>
           </div>
         </div>
@@ -1918,73 +2040,73 @@ export default function POS({ onClose }: POSProps) {
 
       {/* Maximize Modal */}
       {isMaximizeModalOpen && activeOrder && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-5xl p-8 space-y-8 h-[90vh] flex flex-col shadow-2xl">
-            <div className="flex justify-between items-center border-b border-zinc-100 pb-6">
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-3xl w-full max-w-5xl p-8 space-y-8 h-[90vh] flex flex-col shadow-2xl">
+            <div className="flex justify-between items-center border-b border-border pb-6">
               <div>
-                <h3 className="text-4xl font-black text-zinc-900 tracking-tight">Order #{activeOrder.id.slice(-6).toUpperCase()}</h3>
-                <p className="text-sm font-bold text-zinc-400 uppercase tracking-widest mt-2">Placed at {activeOrder.createdAt?.toDate().toLocaleTimeString()}</p>
+                <h3 className="text-4xl font-black text-foreground tracking-tight">Order #{activeOrder.id.slice(-6).toUpperCase()}</h3>
+                <p className="text-sm font-bold text-muted-foreground uppercase tracking-widest mt-2">Placed at {activeOrder.createdAt?.toDate().toLocaleTimeString()}</p>
               </div>
-              <button onClick={() => setIsMaximizeModalOpen(false)} className="p-3 hover:bg-zinc-100 rounded-full transition-colors">
-                <X size={28} className="text-zinc-500" />
+              <button onClick={() => setIsMaximizeModalOpen(false)} className="p-3 hover:bg-muted rounded-full transition-colors">
+                <X size={28} className="text-muted-foreground" />
               </button>
             </div>
             
             <div className="flex-1 overflow-y-auto space-y-8 custom-scrollbar pr-4">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-zinc-50 p-6 rounded-2xl border border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-2">Order Type</p>
-                  <p className="font-black text-2xl text-zinc-900 uppercase">{activeOrder.orderType}</p>
+                <div className="bg-muted/30 p-6 rounded-2xl border border-border">
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Order Type</p>
+                  <p className="font-black text-2xl text-foreground uppercase">{activeOrder.orderType}</p>
                 </div>
-                <div className="bg-zinc-50 p-6 rounded-2xl border border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-2">Status</p>
-                  <p className="font-black text-2xl text-zinc-900 uppercase">{activeOrder.status}</p>
+                <div className="bg-muted/30 p-6 rounded-2xl border border-border">
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Status</p>
+                  <p className="font-black text-2xl text-foreground uppercase">{activeOrder.status}</p>
                 </div>
-                <div className="bg-zinc-50 p-6 rounded-2xl border border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-2">Table</p>
-                  <p className="font-black text-2xl text-zinc-900">{activeOrder.tableNumber || 'N/A'}</p>
+                <div className="bg-muted/30 p-6 rounded-2xl border border-border">
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Table</p>
+                  <p className="font-black text-2xl text-foreground">{activeOrder.tableNumber || 'N/A'}</p>
                 </div>
-                <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100">
-                  <p className="text-xs font-bold text-emerald-600/70 uppercase tracking-widest mb-2">Total Amount</p>
-                  <p className="font-black text-3xl text-emerald-600">{formatCurrency(activeOrder.total)}</p>
+                <div className="bg-emerald-500/10 p-6 rounded-2xl border border-emerald-500/20">
+                  <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-2">Total Amount</p>
+                  <p className="font-black text-3xl text-emerald-500">{formatCurrency(activeOrder.total)}</p>
                 </div>
               </div>
 
               {activeOrder.notes && (
-                <div className="bg-amber-50 p-6 rounded-2xl border border-amber-200/50">
-                  <h4 className="text-xs font-black text-amber-800 uppercase tracking-widest mb-3 flex items-center gap-2">
+                <div className="bg-amber-500/10 p-6 rounded-2xl border border-amber-500/20">
+                  <h4 className="text-xs font-black text-amber-500 uppercase tracking-widest mb-3 flex items-center gap-2">
                     <Pencil size={14} /> Order Notes
                   </h4>
-                  <p className="text-lg font-bold text-amber-900">{activeOrder.notes}</p>
+                  <p className="text-lg font-bold text-amber-200">{activeOrder.notes}</p>
                 </div>
               )}
 
               <div>
-                <h4 className="text-sm font-black text-zinc-400 uppercase tracking-widest mb-4">Order Items</h4>
-                <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden">
+                <h4 className="text-sm font-black text-muted-foreground uppercase tracking-widest mb-4">Order Items</h4>
+                <div className="bg-card border border-border rounded-2xl overflow-hidden">
                   <table className="w-full text-left">
-                    <thead className="bg-zinc-50 border-b border-zinc-200">
+                    <thead className="bg-muted/50 border-b border-border">
                       <tr>
-                        <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest">Item</th>
-                        <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest text-center">Qty</th>
-                        <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest text-right">Price</th>
-                        <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest text-right">Total</th>
+                        <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">Item</th>
+                        <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest text-center">Qty</th>
+                        <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest text-right">Price</th>
+                        <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest text-right">Total</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-zinc-100">
+                    <tbody className="divide-y divide-border">
                       {activeOrder.items.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-zinc-50/50 transition-colors">
+                        <tr key={idx} className="hover:bg-muted/30 transition-colors">
                           <td className="p-4">
-                            <p className="font-bold text-zinc-900 text-lg">{item.name}</p>
-                            {item.notes && <p className="text-sm font-medium text-zinc-500 mt-1">{item.notes}</p>}
+                            <p className="font-bold text-foreground text-lg">{item.name}</p>
+                            {item.notes && <p className="text-sm font-medium text-muted-foreground mt-1">{item.notes}</p>}
                           </td>
                           <td className="p-4 text-center">
-                            <span className="inline-flex items-center justify-center w-10 h-10 bg-zinc-100 rounded-xl font-black text-zinc-900">
+                            <span className="inline-flex items-center justify-center w-10 h-10 bg-muted rounded-xl font-black text-foreground">
                               {item.quantity}
                             </span>
                           </td>
-                          <td className="p-4 text-right font-bold text-zinc-500">{formatCurrency(item.price)}</td>
-                          <td className="p-4 text-right font-black text-zinc-900 text-lg">{formatCurrency(item.price * item.quantity)}</td>
+                          <td className="p-4 text-right font-bold text-muted-foreground">{formatCurrency(item.price)}</td>
+                          <td className="p-4 text-right font-black text-foreground text-lg">{formatCurrency(item.price * item.quantity)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1994,8 +2116,8 @@ export default function POS({ onClose }: POSProps) {
               
               {activeOrder.discount ? (
                 <div className="flex justify-end">
-                  <div className="w-72 bg-zinc-50 p-6 rounded-2xl border border-zinc-200 space-y-3">
-                    <div className="flex justify-between items-center text-sm font-bold text-zinc-500">
+                  <div className="w-72 bg-muted/30 p-6 rounded-2xl border border-border space-y-3">
+                    <div className="flex justify-between items-center text-sm font-bold text-muted-foreground">
                       <span>Subtotal</span>
                       <span>{formatCurrency(activeOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0))}</span>
                     </div>
@@ -2006,9 +2128,9 @@ export default function POS({ onClose }: POSProps) {
                         : Math.round(activeOrder.discount * 100)
                       )}</span>
                     </div>
-                    <div className="pt-3 border-t border-zinc-200 flex justify-between items-center">
-                      <span className="font-black text-zinc-900 uppercase tracking-widest">Total</span>
-                      <span className="text-2xl font-black text-emerald-600">{formatCurrency(activeOrder.total)}</span>
+                    <div className="pt-3 border-t border-border flex justify-between items-center">
+                      <span className="font-black text-foreground uppercase tracking-widest">Total</span>
+                      <span className="text-2xl font-black text-emerald-500">{formatCurrency(activeOrder.total)}</span>
                     </div>
                   </div>
                 </div>

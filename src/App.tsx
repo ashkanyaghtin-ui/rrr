@@ -307,17 +307,25 @@ export default function App() {
     const unsubscribeSettings = onSnapshot(doc(db, 'settings', 'system'), (doc) => {
       if (doc.exists()) {
         const data = doc.data();
-        if (data.theme) {
-          const root = document.documentElement;
-          if (data.theme.primaryColor) root.style.setProperty('--color-primary', data.theme.primaryColor);
-          if (data.theme.secondaryColor) root.style.setProperty('--color-secondary', data.theme.secondaryColor);
-          if (data.theme.accentColor) root.style.setProperty('--color-accent', data.theme.accentColor);
+        const isAdminRoute = location.pathname.startsWith('/admin');
+        const theme = isAdminRoute ? data.backEndTheme : data.theme;
+        
+        const root = document.documentElement;
+        if (theme) {
+          if (theme.primaryColor) root.style.setProperty('--primary', theme.primaryColor);
+          if (theme.secondaryColor) root.style.setProperty('--secondary', theme.secondaryColor);
+          if (theme.accentColor) root.style.setProperty('--accent', theme.accentColor);
           
-          if (data.theme.darkMode) {
+          if (theme.darkMode) {
             root.classList.add('dark');
           } else {
             root.classList.remove('dark');
           }
+        } else {
+          root.style.removeProperty('--primary');
+          root.style.removeProperty('--secondary');
+          root.style.removeProperty('--accent');
+          root.classList.remove('dark');
         }
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/system'));

@@ -9,7 +9,12 @@ import {
   doc, 
   getDoc, 
   setDoc, 
-  onSnapshot 
+  onSnapshot,
+  collection,
+  query,
+  where,
+  getDocs,
+  updateDoc
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 
@@ -64,18 +69,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const profileRef = doc(db, 'users', currentUser.uid);
         
         // Use onSnapshot for real-time profile updates
-        unsubProfile = onSnapshot(profileRef, (docSnap) => {
+        unsubProfile = onSnapshot(profileRef, async (docSnap) => {
           if (docSnap.exists()) {
             setProfile(docSnap.data() as UserProfile);
           } else {
             // Create initial profile if it doesn't exist
+            let role: any = 'client';
+            let permissions = {};
+            
+            if (currentUser.email) {
+              try {
+                const staffQ = query(collection(db, 'staff'), where('email', '==', currentUser.email));
+                const staffSnap = await getDocs(staffQ);
+                if (!staffSnap.empty) {
+                  const staffData = staffSnap.docs[0].data();
+                  role = staffData.role || 'client';
+                  permissions = staffData.permissions || {};
+                  // Update staff record with uid
+                  await updateDoc(doc(db, 'staff', staffSnap.docs[0].id), { uid: currentUser.uid });
+                }
+              } catch (err) {
+                console.error("Error checking staff collection:", err);
+              }
+            }
+
             const newProfile: UserProfile = {
               uid: currentUser.uid,
               email: currentUser.email || '',
               displayName: currentUser.displayName,
               addresses: [],
-              role: 'client',
-              tenantId: 'rivas'
+              role: role,
+              tenantId: 'rivas',
+              ...(Object.keys(permissions).length > 0 ? { permissions } : {})
             };
             setDoc(profileRef, newProfile).catch(err => 
               handleFirestoreError(err, OperationType.CREATE, `users/${currentUser.uid}`)

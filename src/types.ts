@@ -63,7 +63,11 @@ export interface Order {
   waiter?: string;
   occupancy?: number;
   notes?: string;
-  paymentMethod?: 'cash' | 'card' | 'online' | 'talabat' | 'zomato' | 'deliveroo' | 'careem' | 'noon' | 'open bill';
+  paymentMethod?: 'cash' | 'card' | 'online' | 'talabat' | 'zomato' | 'deliveroo' | 'careem' | 'noon' | 'open bill' | 'multi';
+  multiPayment?: {
+    cash: number;
+    card: number;
+  };
   amountReceived?: number;
   changeGiven?: number;
   discount?: number;

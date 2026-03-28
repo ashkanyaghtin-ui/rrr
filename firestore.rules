@@ -266,6 +266,26 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    match /drivers/{driverId} {
+    allow read: if isAuthenticated();
+    allow write: if isAdmin();
+  }
+
+  match /mobileUnits/{unitId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /terminals/{terminalId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
     match /cheques/{chequeId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();

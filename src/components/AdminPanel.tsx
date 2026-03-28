@@ -9,7 +9,7 @@ import AccountingReportsIFRS from './AccountingReportsIFRS';
 import CRM from './CRM';
 import RecipeManager from './RecipeManager';
 import { useAuth } from '../contexts/AuthContext';
-import { formatCurrency } from '../utils/format';
+import { formatCurrency, formatCurrencyDirect } from '../utils/format';
 import { exportToExcel } from '../utils/excel';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
@@ -23,10 +23,89 @@ interface AdminPanelProps {
   onOpenPOS?: () => void;
 }
 
+const Dashboard = () => {
+  const salesData = [
+    { name: 'Mon', sales: 4000 },
+    { name: 'Tue', sales: 3000 },
+    { name: 'Wed', sales: 5000 },
+    { name: 'Thu', sales: 2780 },
+    { name: 'Fri', sales: 1890 },
+    { name: 'Sat', sales: 2390 },
+    { name: 'Sun', sales: 3490 },
+  ];
+  const paymentData = [
+    { name: 'Cash', value: 400 },
+    { name: 'Credit Card', value: 300 },
+    { name: 'Debit Card', value: 300 },
+    { name: 'Cheque', value: 200 },
+    { name: 'Bank', value: 100 },
+    { name: 'Other', value: 50 },
+  ];
+  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
+          <p className="text-sm text-muted-foreground">Total Sales</p>
+          <h3 className="text-2xl font-bold text-foreground">306</h3>
+          <p className="text-xs text-green-500">2% increase from last week</p>
+        </div>
+        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
+          <p className="text-sm text-muted-foreground">Sales Revenue</p>
+          <h3 className="text-2xl font-bold text-foreground">AED 91,113</h3>
+          <p className="text-xs text-green-500">25% increase from last week</p>
+        </div>
+        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
+          <p className="text-sm text-muted-foreground">New Customers</p>
+          <h3 className="text-2xl font-bold text-foreground">20</h3>
+          <p className="text-xs text-red-500">13% decrease from last week</p>
+        </div>
+        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
+          <p className="text-sm text-muted-foreground">Average Rating</p>
+          <h3 className="text-2xl font-bold text-foreground">5/5</h3>
+          <p className="text-xs text-muted-foreground">0% increase from last week</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
+          <h3 className="text-lg font-bold text-foreground mb-4">This week's sales revenue</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={salesData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis />
+              <Tooltip />
+              <Line type="monotone" dataKey="sales" stroke="#8884d8" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
+          <h3 className="text-lg font-bold text-foreground mb-4">Payment methods used this week</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie data={paymentData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} fill="#8884d8" label>
+                {paymentData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function AdminPanel({ items, categories, onClose, onLogout, onOpenPOS }: AdminPanelProps) {
   const { user, profile } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production'>('orders');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production' | 'purchases' | 'delivery'>('dashboard');
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [isAddingDriver, setIsAddingDriver] = useState(false);
+  const [newDriver, setNewDriver] = useState({ name: '', phone: '', vehicle: '', status: 'active' });
   const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'journal' | 'vouchers' | 'bills' | 'banking' | 'taxes' | 'reports'>('dashboard');
   const [accountingDateRange, setAccountingDateRange] = useState({ start: '', end: '' });
   const [accountingSearch, setAccountingSearch] = useState('');
@@ -45,22 +124,22 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const handleAddLedgerGroup = async () => {
     if (!newLedgerGroup.name) return;
     try {
-      await addDoc(collection(db, 'ledger_groups'), {
+      await addDoc(collection(db, 'ledgerGroups'), {
         ...newLedgerGroup,
         createdAt: serverTimestamp()
       });
       setNewLedgerGroup({ name: '', type: 'Asset' });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'ledger_groups');
+      handleFirestoreError(error, OperationType.CREATE, 'ledgerGroups');
     }
   };
 
   const deleteLedgerGroup = async (id: string) => {
     if (!window.confirm('Are you sure you want to delete this ledger group?')) return;
     try {
-      await deleteDoc(doc(db, 'ledger_groups', id));
+      await deleteDoc(doc(db, 'ledgerGroups', id));
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `ledger_groups/${id}`);
+      handleFirestoreError(error, OperationType.DELETE, `ledgerGroups/${id}`);
     }
   };
 
@@ -147,6 +226,9 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       case 'crm':
       case 'pos':
         return ['manager', 'chef', 'driver', 'waiter'].includes(userRole);
+      case 'suppliers':
+      case 'purchases':
+      case 'production':
       case 'kitchen':
       case 'inventory':
       case 'wastage':
@@ -354,6 +436,15 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setWastage(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'wastage'));
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'staff'), where('role', '==', 'driver'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setDrivers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'staff'));
     return () => unsubscribe();
   }, [user]);
 
@@ -600,7 +691,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           if (type === 'menu') {
             await addDoc(collection(db, 'menu'), {
               name: row.Name,
-              price: row.Price,
+              price: Math.round((Number(row.Price) || 0) * 100),
               description: row.Description || '',
               category: row.Category || categories[0]?.id,
               available: true,
@@ -679,7 +770,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     setEditingId(item.id);
     setEditForm({
       ...item,
-      price: item.price // Already in cents
+      price: item.price / 100 // Convert cents to simple form for editing
     });
   };
 
@@ -689,7 +780,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       const { id: _, ...dataToUpdate } = editForm;
       const updatedItem = {
         ...dataToUpdate,
-        price: Number(dataToUpdate.price) || 0, // Already in cents
+        price: Math.round((Number(dataToUpdate.price) || 0) * 100), // Convert to cents
         image: formatImageUrl(editForm.image || '')
       };
       await updateDoc(itemRef, updatedItem);
@@ -749,7 +840,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     try {
       await addDoc(collection(db, 'menu'), {
         ...newForm,
-        price: Number(newForm.price) || 0, // Already in cents
+        price: Math.round((Number(newForm.price) || 0) * 100), // Convert to cents
         available: true,
         image: formatImageUrl(newForm.image || '')
       });
@@ -815,12 +906,15 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     if (!printWindow) return;
 
     const itemsHtml = order.items.map(item => `
-      <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-family: monospace; font-size: 12px;">
+      <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-family: monospace;">
         <span>${item.quantity}x ${item.name}</span>
         <span>${formatCurrency(item.price * item.quantity)}</span>
       </div>
     `).join('');
 
+    const subtotal = order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+    const discountAmount = order.discountType === 'percentage' ? (subtotal * ((order.discount || 0) / 100)) : ((order.discount || 0) * 100);
+    const taxAmount = (subtotal - discountAmount) * 0.05; // Assuming 5% VAT
     const html = `
       <html>
         <head>
@@ -829,39 +923,56 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             body { font-family: 'Courier New', Courier, monospace; width: 80mm; padding: 10px; }
             .header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; }
             .footer { border-top: 1px dashed #000; padding-top: 10px; margin-top: 10px; text-align: center; font-size: 12px; }
-            .totals { border-top: 1px dashed #000; padding-top: 10px; margin-top: 10px; }
-            .total-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
-            .total-row.final { font-weight: bold; font-size: 14px; }
+            .item-row { display: flex; justify-content: space-between; margin: 5px 0; }
+            .totals { border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px; }
+            .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin-top: 5px; }
+            .info-row { display: flex; justify-content: space-between; font-size: 12px; margin: 2px 0; }
           </style>
         </head>
         <body onload="window.print(); window.close();">
           <div class="header">
-            <h2 style="margin: 0 0 5px 0;">CUSTOMER BILL</h2>
-            <div style="font-size: 12px;">Order #${order.id.slice(-6).toUpperCase()}</div>
-            <div style="font-size: 12px;">Date: ${new Date().toLocaleString()}</div>
-            ${order.customerName ? `<div style="font-size: 12px;">Customer: ${order.customerName}</div>` : ''}
+            <h2 style="margin: 0;">RIVAS RESTAURANT</h2>
+            <p style="margin: 5px 0; font-size: 12px;">TRN: 100000000000000</p>
+            <p style="margin: 5px 0; font-size: 12px;">Tel: +971 4 123 4567</p>
+            <div style="border-top: 1px dashed #000; margin: 10px 0;"></div>
+            <div class="info-row"><span>Order:</span><span>#${order.id.slice(-6).toUpperCase()}</span></div>
+            <div class="info-row"><span>Type:</span><span>${order.orderType.toUpperCase()}</span></div>
+            ${order.tableNumber ? `<div class="info-row"><span>Table:</span><span>${order.tableNumber}</span></div>` : ''}
+            ${order.waiter ? `<div class="info-row"><span>Waiter:</span><span>${order.waiter}</span></div>` : ''}
+            ${order.occupancy ? `<div class="info-row"><span>Guests:</span><span>${order.occupancy}</span></div>` : ''}
+            <div class="info-row"><span>Date:</span><span>${new Date().toLocaleString()}</span></div>
           </div>
-          <div style="margin-bottom: 15px;">
+          <div class="items">
             ${itemsHtml}
           </div>
           <div class="totals">
-            <div class="total-row">
-              <span>Subtotal</span>
-              <span>${formatCurrency(order.total + (order.discount || 0))}</span>
+            <div class="item-row">
+              <span>Subtotal:</span>
+              <span>${formatCurrency(subtotal)}</span>
             </div>
-            ${order.discount ? `
-            <div class="total-row">
-              <span>Discount</span>
-              <span>-${formatCurrency(order.discount)}</span>
+            ${order.discount ? `<div class="item-row"><span>Discount ${order.discountType === 'percentage' ? `(${order.discount}%)` : ''}:</span><span>-${formatCurrency(discountAmount)}</span></div>` : ''}
+            <div class="item-row">
+              <span>VAT (5%):</span>
+              <span>${formatCurrency(taxAmount)}</span>
             </div>
-            ` : ''}
-            <div class="total-row final">
-              <span>Total</span>
+            <div class="total-row">
+              <span>TOTAL:</span>
               <span>${formatCurrency(order.total)}</span>
             </div>
+            ${order.paymentMethod ? `
+            <div style="border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px;">
+              <div class="info-row"><span>Payment Method:</span><span style="text-transform: uppercase;">${order.paymentMethod}</span></div>
+              ${order.paymentMethod === 'multi' && order.multiPayment ? `
+                <div class="info-row"><span>- Cash:</span><span>${formatCurrency(order.multiPayment.cash)}</span></div>
+                <div class="info-row"><span>- Card:</span><span>${formatCurrency(order.multiPayment.card)}</span></div>
+              ` : ''}
+              ${order.amountReceived ? `<div class="info-row"><span>Amount Received:</span><span>${formatCurrency(order.amountReceived)}</span></div>` : ''}
+              ${order.changeGiven ? `<div class="info-row"><span>Change:</span><span>${formatCurrency(order.changeGiven)}</span></div>` : ''}
+            </div>` : ''}
           </div>
           <div class="footer">
-            Thank you for your business!
+            <p>Thank you for your visit!</p>
+            <p style="font-size: 10px; margin-top: 5px;">Powered by AI Studio</p>
           </div>
         </body>
       </html>
@@ -1049,10 +1160,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const stats = getStats();
 
   return (
-    <div className="min-h-screen bg-zinc-50 flex">
+    <div className="min-h-screen bg-background text-foreground flex">
       {/* Sidebar (Desktop) */}
-      <div className={`bg-white border-r border-zinc-200 flex-col h-screen sticky top-0 hidden md:flex transition-all duration-300 ${isMenuOpen ? 'w-64' : 'w-0 overflow-hidden'}`}>
-        <div className="p-6 border-b border-zinc-200 flex items-center gap-4 whitespace-nowrap">
+      <div className={`bg-card border-r border-border flex-col h-screen sticky top-0 hidden md:flex transition-all duration-300 ${isMenuOpen ? 'w-64' : 'w-0 overflow-hidden'}`}>
+        <div className="p-6 border-b border-border flex items-center gap-4 whitespace-nowrap">
           {systemSettings?.logo ? (
             <img src={systemSettings.logo} alt="Logo" className="h-8 w-auto object-contain" referrerPolicy="no-referrer" />
           ) : (
@@ -1067,13 +1178,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Modules</p>
           </div>
           {[
+            { id: 'dashboard', name: 'Dashboard', icon: <LayoutGrid size={18} /> },
             { id: 'orders', name: 'Order Management', icon: <ShoppingBag size={18} /> },
             { id: 'menu', name: 'Menu Items', icon: <LayoutGrid size={18} /> },
             { id: 'recipes', name: 'Recipe Management', icon: <BookOpen size={18} /> },
             { id: 'production', name: 'Production', icon: <ChefHat size={18} /> },
             { id: 'kitchen', name: 'Kitchen (KDS)', icon: <ChefHat size={18} /> },
             { id: 'inventory', name: 'Inventory', icon: <Boxes size={18} /> },
-            { id: 'suppliers', name: 'Suppliers & Purchases', icon: <Truck size={18} /> },
+            { id: 'suppliers', name: 'Suppliers', icon: <Truck size={18} /> },
+            { id: 'purchases', name: 'Purchases', icon: <Receipt size={18} /> },
+            { id: 'delivery', name: 'Delivery', icon: <Truck size={18} /> },
             { id: 'accounting', name: 'Accounting', icon: <BarChart3 size={18} /> },
             { id: 'wastage', name: 'Wastage', icon: <Trash2 size={18} /> },
             { id: 'tables', name: 'Tables', icon: <Move size={18} /> },
@@ -1086,14 +1200,14 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             <button
               key={module.id}
               onClick={() => setActiveTab(module.id as any)}
-              className={`w-full flex items-center justify-between px-6 py-3 transition-all hover:bg-zinc-50 group ${activeTab === module.id ? 'bg-primary/5 border-r-4 border-primary' : ''}`}
+              className={`w-full flex items-center justify-between px-6 py-3 transition-all hover:bg-muted group ${activeTab === module.id ? 'bg-primary/5 border-r-4 border-primary' : ''}`}
             >
               <div className="flex items-center gap-3">
-                <span className={activeTab === module.id ? 'text-primary' : 'text-zinc-400 group-hover:text-zinc-600'}>
+                <span className={activeTab === module.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}>
                   {module.icon}
                 </span>
                 <div className="text-left">
-                  <p className={`text-sm font-bold ${activeTab === module.id ? 'text-primary' : 'text-zinc-600'}`}>{module.name}</p>
+                  <p className={`text-sm font-bold ${activeTab === module.id ? 'text-primary' : 'text-foreground/80'}`}>{module.name}</p>
                 </div>
               </div>
             </button>
@@ -1104,15 +1218,15 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* Header */}
-        <div className="p-4 md:p-8 border-b flex items-center justify-between bg-white">
+        <div className="p-4 md:p-8 border-b border-border flex items-center justify-between bg-card">
           <div className="flex items-center gap-4">
             <button 
               onClick={() => setIsMenuOpen(!isMenuOpen)}
-              className="p-2 hover:bg-zinc-100 rounded-xl transition-all text-zinc-600"
+              className="p-2 hover:bg-muted rounded-xl transition-all text-foreground"
             >
               <MenuIcon size={24} />
             </button>
-            <h1 className="text-xl md:text-2xl font-black text-zinc-900 uppercase tracking-tight">{activeTab.replace('-', ' ')}</h1>
+            <h1 className="text-xl md:text-2xl font-black text-foreground uppercase tracking-tight">{activeTab.replace('-', ' ')}</h1>
           </div>
           <div className="flex items-center gap-2">
             <button 
@@ -1141,13 +1255,15 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         {isMenuOpen && (
           <div className="md:hidden absolute top-[73px] left-0 right-0 bg-white border-b border-zinc-200 z-50 max-h-[60vh] overflow-y-auto shadow-xl">
             {[
+              { id: 'dashboard', name: 'Dashboard', icon: <LayoutGrid size={18} /> },
               { id: 'orders', name: 'Order Management', icon: <ShoppingBag size={18} /> },
               { id: 'menu', name: 'Menu Items', icon: <LayoutGrid size={18} /> },
               { id: 'recipes', name: 'Recipe Management', icon: <BookOpen size={18} /> },
               { id: 'production', name: 'Production', icon: <ChefHat size={18} /> },
               { id: 'kitchen', name: 'Kitchen (KDS)', icon: <ChefHat size={18} /> },
               { id: 'inventory', name: 'Inventory', icon: <Boxes size={18} /> },
-              { id: 'suppliers', name: 'Suppliers & Purchases', icon: <Truck size={18} /> },
+              { id: 'suppliers', name: 'Suppliers', icon: <Truck size={18} /> },
+              { id: 'purchases', name: 'Purchases', icon: <Receipt size={18} /> },
               { id: 'accounting', name: 'Accounting', icon: <BarChart3 size={18} /> },
               { id: 'wastage', name: 'Wastage', icon: <Trash2 size={18} /> },
               { id: 'tables', name: 'Tables', icon: <Move size={18} /> },
@@ -1173,8 +1289,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         )}
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-zinc-50">
-          {activeTab === 'crm' ? (
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-muted/30">
+          {activeTab === 'dashboard' ? (
+            <Dashboard />
+          ) : activeTab === 'crm' ? (
             <CRM />
           ) : activeTab === 'users' ? (
             <StaffSection staff={staff} />
@@ -1199,7 +1317,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
                 <div className="flex items-center gap-3">
                   <button 
-                    onClick={() => exportToExcel(items.map(i => ({ name: i.name, category: i.category, price: i.price, recipe: JSON.stringify(i.recipe || []) })), 'Recipes')}
+                    onClick={() => exportToExcel(items.map(i => ({ name: i.name, category: i.category, price: i.price / 100, recipe: JSON.stringify(i.recipe || []) })), 'Recipes')}
                     className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 text-zinc-600 rounded-2xl text-[10px] font-bold hover:bg-zinc-50 transition-all"
                   >
                     <Download size={14} /> Export
@@ -1221,7 +1339,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {items.map(item => (
-                  <div key={item.id} className="p-6 bg-white border border-zinc-100 rounded-[2.5rem] hover:shadow-xl hover:shadow-zinc-200/50 transition-all group">
+                  <div key={item.id} className="p-6 bg-card border border-border rounded-[2.5rem] hover:shadow-xl hover:shadow-primary/5 transition-all group">
                     <div className="flex items-center gap-4 mb-4">
                       <div className="w-16 h-16 rounded-2xl bg-zinc-50 flex items-center justify-center overflow-hidden border border-zinc-100">
                         {item.image ? (
@@ -1260,7 +1378,11 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               </div>
             </div>
           ) : activeTab === 'suppliers' ? (
-            <SuppliersSection suppliers={vendors} inventory={inventory} />
+            <SuppliersSection suppliers={vendors} />
+          ) : activeTab === 'purchases' ? (
+            <PurchasesSection suppliers={vendors} inventory={inventory} bills={bills} />
+          ) : activeTab === 'delivery' ? (
+            <DeliverySection drivers={drivers} />
           ) : activeTab === 'settings' ? (
             <div className="space-y-8">
               <div className="flex items-center gap-3">
@@ -1270,63 +1392,63 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">System Settings</h2>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="p-8 bg-white border border-zinc-100 rounded-[2.5rem] shadow-sm">
-                  <h3 className="font-bold text-zinc-900 mb-6 flex items-center gap-2">
-                    <Building size={18} className="text-zinc-400" />
+                  <div className="p-8 bg-card border border-border rounded-[2.5rem] shadow-sm">
+                  <h3 className="font-bold text-foreground mb-6 flex items-center gap-2">
+                    <Building size={18} className="text-muted-foreground" />
                     Company Information
                   </h3>
                   <div className="space-y-4">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Company Name</label>
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Company Name</label>
                       <input 
                         type="text" 
-                        className="w-full p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                        className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
                         value={systemSettings?.companyName || ''} 
                         onChange={e => setSystemSettings({...systemSettings, companyName: e.target.value})}
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Logo URL</label>
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Logo URL</label>
                       <input 
                         type="text" 
-                        className="w-full p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                        className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
                         value={systemSettings?.logo || ''} 
                         onChange={e => setSystemSettings({...systemSettings, logo: e.target.value})}
                         placeholder="https://example.com/logo.png"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Tax ID</label>
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Tax ID</label>
                       <input 
                         type="text" 
-                        className="w-full p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                        className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
                         value={systemSettings?.taxId || ''} 
                         onChange={e => setSystemSettings({...systemSettings, taxId: e.target.value})}
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Print Server URLs (Comma Separated)</label>
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Print Server URLs (Comma Separated)</label>
                       <input 
                         type="text" 
-                        className="w-full p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                        className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
                         value={systemSettings?.printServerUrls || ''} 
                         onChange={e => setSystemSettings({...systemSettings, printServerUrls: e.target.value})}
                         placeholder="http://192.168.1.100:5000, http://192.168.1.101:5000"
                       />
-                      <p className="text-[10px] text-zinc-400 mt-1 italic">Used for KOT and multi-printer support. Separate multiple URLs with commas.</p>
+                      <p className="text-[10px] text-muted-foreground mt-1 italic">Used for KOT and multi-printer support. Separate multiple URLs with commas.</p>
                     </div>
                   </div>
                 </div>
-                <div className="p-8 bg-white border border-zinc-100 rounded-[2.5rem] shadow-sm">
-                  <h3 className="font-bold text-zinc-900 mb-6 flex items-center gap-2">
-                    <Monitor size={18} className="text-zinc-400" />
+                <div className="p-8 bg-card border border-border rounded-[2.5rem] shadow-sm">
+                  <h3 className="font-bold text-foreground mb-6 flex items-center gap-2">
+                    <Monitor size={18} className="text-muted-foreground" />
                     POS Configuration
                   </h3>
                   <div className="space-y-4">
-                    <div className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
+                    <div className="flex items-center justify-between p-4 bg-muted rounded-2xl">
                       <div>
-                        <p className="text-sm font-bold text-zinc-900">Sold by Piece</p>
-                        <p className="text-xs text-zinc-500">Automatically deduct ingredients on each sale</p>
+                        <p className="text-sm font-bold text-foreground">Sold by Piece</p>
+                        <p className="text-xs text-muted-foreground">Automatically deduct ingredients on each sale</p>
                       </div>
                       <input 
                         type="checkbox" 
@@ -1335,17 +1457,17 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                         onChange={e => setSystemSettings({...systemSettings, soldByPiece: e.target.checked})}
                       />
                     </div>
-                    <div className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
+                    <div className="flex items-center justify-between p-4 bg-muted rounded-2xl">
                       <div>
-                        <p className="text-sm font-bold text-zinc-900">Auto-Finalize Orders</p>
-                        <p className="text-xs text-zinc-500">Automatically finalize orders after payment</p>
+                        <p className="text-sm font-bold text-foreground">Auto-Finalize Orders</p>
+                        <p className="text-xs text-muted-foreground">Automatically finalize orders after payment</p>
                       </div>
                       <input type="checkbox" className="w-5 h-5 accent-primary" defaultChecked={false} />
                     </div>
-                    <div className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
+                    <div className="flex items-center justify-between p-4 bg-muted rounded-2xl">
                       <div>
-                        <p className="text-sm font-bold text-zinc-900">Print Receipt Automatically</p>
-                        <p className="text-xs text-zinc-500">Print receipt when order is finalized</p>
+                        <p className="text-sm font-bold text-foreground">Print Receipt Automatically</p>
+                        <p className="text-xs text-muted-foreground">Print receipt when order is finalized</p>
                       </div>
                       <input type="checkbox" className="w-5 h-5 accent-primary" defaultChecked={true} />
                     </div>
@@ -1354,7 +1476,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 <div className="p-8 bg-white border border-zinc-100 rounded-[2.5rem] shadow-sm md:col-span-2">
                   <h3 className="font-bold text-zinc-900 mb-6 flex items-center gap-2">
                     <Settings size={18} className="text-zinc-400" />
-                    Theme Configuration
+                    Frontend Theme Configuration
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="space-y-1">
@@ -1410,7 +1532,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     </div>
                     <div className="md:col-span-3 flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
                       <div>
-                        <p className="text-sm font-bold text-zinc-900">Dark Mode</p>
+                        <p className="text-sm font-bold text-zinc-900">Frontend Dark Mode</p>
                         <p className="text-xs text-zinc-500">Enable dark mode for the frontend</p>
                       </div>
                       <input 
@@ -1418,6 +1540,78 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                         className="w-5 h-5 accent-primary" 
                         checked={systemSettings?.theme?.darkMode || false} 
                         onChange={e => setSystemSettings({...systemSettings, theme: {...systemSettings?.theme, darkMode: e.target.checked}})}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-8 bg-white border border-zinc-100 rounded-[2.5rem] shadow-sm md:col-span-2">
+                  <h3 className="font-bold text-zinc-900 mb-6 flex items-center gap-2">
+                    <Settings size={18} className="text-zinc-400" />
+                    Backend Theme Configuration
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Primary Color</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="color" 
+                          className="w-12 h-12 p-1 border border-zinc-200 rounded-xl cursor-pointer" 
+                          value={systemSettings?.backEndTheme?.primaryColor || '#8B1E3F'} 
+                          onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, primaryColor: e.target.value}})}
+                        />
+                        <input 
+                          type="text" 
+                          className="flex-1 p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                          value={systemSettings?.backEndTheme?.primaryColor || '#8B1E3F'} 
+                          onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, primaryColor: e.target.value}})}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Secondary Color</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="color" 
+                          className="w-12 h-12 p-1 border border-zinc-200 rounded-xl cursor-pointer" 
+                          value={systemSettings?.backEndTheme?.secondaryColor || '#64748b'} 
+                          onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, secondaryColor: e.target.value}})}
+                        />
+                        <input 
+                          type="text" 
+                          className="flex-1 p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                          value={systemSettings?.backEndTheme?.secondaryColor || '#64748b'} 
+                          onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, secondaryColor: e.target.value}})}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Accent Color</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="color" 
+                          className="w-12 h-12 p-1 border border-zinc-200 rounded-xl cursor-pointer" 
+                          value={systemSettings?.backEndTheme?.accentColor || '#76B947'} 
+                          onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, accentColor: e.target.value}})}
+                        />
+                        <input 
+                          type="text" 
+                          className="flex-1 p-3 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" 
+                          value={systemSettings?.backEndTheme?.accentColor || '#76B947'} 
+                          onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, accentColor: e.target.value}})}
+                        />
+                      </div>
+                    </div>
+                    <div className="md:col-span-3 flex items-center justify-between p-4 bg-zinc-50 rounded-2xl">
+                      <div>
+                        <p className="text-sm font-bold text-zinc-900">Backend Dark Mode</p>
+                        <p className="text-xs text-zinc-500">Enable dark mode for the backend</p>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        className="w-5 h-5 accent-primary" 
+                        checked={systemSettings?.backEndTheme?.darkMode || false} 
+                        onChange={e => setSystemSettings({...systemSettings, backEndTheme: {...systemSettings?.backEndTheme, darkMode: e.target.checked}})}
                       />
                     </div>
                   </div>
@@ -1447,7 +1641,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           ) : activeTab === 'orders' ? (
             <div className="flex-1 flex flex-col overflow-hidden">
               {/* Filter Bar */}
-              <div className="p-6 bg-zinc-50 border-b border-zinc-200 flex flex-col gap-4">
+              <div className="p-6 bg-muted/50 border-b border-border flex flex-col gap-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-zinc-900">Order Filters</h3>
                   <div className="flex items-center gap-3">
@@ -1589,7 +1783,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               </div>
 
               {/* Order List */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-zinc-50">
+              <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-muted/30">
                 {filteredOrders.length === 0 ? (
                   <div className="text-center py-20">
                     <ShoppingBag size={48} className="text-zinc-200 mx-auto mb-4" />
@@ -1597,7 +1791,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   </div>
                 ) : (
                   filteredOrders.map(order => (
-                    <div key={order.id} className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden hover:shadow-md transition-all">
+                    <div key={order.id} className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden hover:shadow-md transition-all">
                       <div 
                         className="grid grid-cols-1 lg:grid-cols-12 cursor-pointer hover:bg-zinc-50/50 transition-colors"
                         onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
@@ -1684,126 +1878,37 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                           )}
                         </div>
 
-                          {/* Accounting & Stock Flow */}
-                        <div className="lg:col-span-10 p-6 border-t border-zinc-100 bg-zinc-50/30">
-                          <div className="flex items-center justify-between mb-4">
-                            <h4 className="text-xs font-black text-zinc-900 uppercase tracking-widest flex items-center gap-2">
-                              <BarChart3 size={14} className="text-primary" />
-                              Accounting & Stock Flow
-                            </h4>
-                          </div>
-                          
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {/* Journal Entries */}
-                            <div className="space-y-3">
-                              <p className="text-[10px] font-bold text-zinc-400 uppercase">Journal Entries</p>
-                              
-                              <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
-                                {journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).length > 0 ? (
-                                  journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).map((entry, idx) => (
-                                    <div key={idx} className="border-b border-zinc-50 last:border-0">
-                                      <button 
-                                        onClick={() => setExpandedJournalEntryId(expandedJournalEntryId === entry.id ? null : entry.id)}
-                                        className="w-full p-3 flex items-center justify-between hover:bg-zinc-50 transition-colors text-left"
-                                      >
-                                        <p className="text-xs font-bold text-zinc-900">{entry.description}</p>
-                                        <div className="flex items-center gap-2">
-                                          <p className="text-[10px] text-zinc-500">{entry.date}</p>
-                                          <span className="text-zinc-400 text-[10px]">{expandedJournalEntryId === entry.id ? '▼' : '▶'}</span>
-                                        </div>
-                                      </button>
-                                      
-                                      {expandedJournalEntryId === entry.id && (
-                                        <div className="p-3 bg-zinc-50/50 space-y-1 border-t border-zinc-50">
-                                          {entry.lines.map((line: any, lIdx: number) => (
-                                            <div key={lIdx} className="flex items-center justify-between text-[10px]">
-                                              <span className="text-zinc-600">{line.accountName}</span>
-                                              <div className="flex gap-4">
-                                                <span className={line.debit > 0 ? 'text-emerald-600 font-bold' : 'text-zinc-400'}>{formatCurrency(line.debit)}</span>
-                                                <span className={line.credit > 0 ? 'text-blue-600 font-bold' : 'text-zinc-400'}>{formatCurrency(line.credit)}</span>
-                                              </div>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))
-                                ) : (
-                                  <div className="p-4 text-center">
-                                    <p className="text-[10px] text-zinc-400 italic">No formal journal entries found for this order.</p>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Stock Flow */}
-                            <div className="space-y-3">
-                              <p className="text-[10px] font-bold text-zinc-400 uppercase">Associated Stock Flow</p>
-                              
-                              <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
-                                {order.items.map((orderItem, idx) => {
-                                  const menuItem = items.find(i => i.id === orderItem.itemId);
-                                  const recipe = menuItem?.recipe || [];
-                                  const itemKey = `${order.id}-${idx}`;
-                                  
-                                  return (
-                                    <div key={idx} className="border-b border-zinc-50 last:border-0">
-                                      <button 
-                                        onClick={() => setExpandedStockItemId(expandedStockItemId === itemKey ? null : itemKey)}
-                                        className="w-full p-3 flex items-center justify-between hover:bg-zinc-50 transition-colors text-left"
-                                      >
-                                        <p className="text-xs font-black text-zinc-900">{orderItem.name} <span className="text-zinc-400 font-bold ml-1">x{orderItem.quantity}</span></p>
-                                        <span className="text-zinc-400 text-[10px]">{expandedStockItemId === itemKey ? '▼' : '▶'}</span>
-                                      </button>
-                                      
-                                      {expandedStockItemId === itemKey && (
-                                        <div className="p-3 bg-zinc-50/50 space-y-2 border-t border-zinc-50">
-                                          {recipe.length > 0 ? (
-                                            recipe.map((ing, iIdx) => {
-                                              const invItem = inventory.find(inv => inv.id === ing.inventoryItemId);
-                                              return (
-                                                <div key={iIdx} className="flex justify-between items-center">
-                                                  <p className="text-[10px] font-bold text-zinc-600">{invItem?.name || 'Unknown Ingredient'}</p>
-                                                  <p className="text-[10px] font-black text-red-500">-{ (ing.quantity * orderItem.quantity).toFixed(2) } {invItem?.unit}</p>
-                                                </div>
-                                              );
-                                            })
-                                          ) : (
-                                            <div className="flex justify-between items-center">
-                                              <p className="text-[10px] font-bold text-zinc-400 italic">No recipe defined</p>
-                                              <p className="text-[10px] font-black text-red-500">-{orderItem.quantity} pcs</p>
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Amount & Actions */}
-                          <div className="lg:col-span-2 p-6 bg-zinc-50/50 flex flex-col justify-between gap-4">
+                          {/* Amount & Actions */}
+                          <div className="lg:col-span-2 p-6 bg-muted/30 flex flex-col justify-between gap-4">
                             <div className="space-y-2">
                               <div>
-                                <p className="text-[10px] font-bold text-zinc-400 uppercase">Payment Method</p>
-                                <p className="text-xs font-black text-zinc-900 uppercase">{order.paymentMethod || 'N/A'}</p>
+                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Payment Method</p>
+                                <p className="text-xs font-black text-foreground uppercase">{order.paymentMethod || 'N/A'}</p>
                               </div>
                               <div>
-                                <p className="text-[10px] font-bold text-zinc-400 uppercase">Amount</p>
-                                <p className="text-sm font-black text-zinc-900">{formatCurrency(order.total)}</p>
+                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Amount</p>
+                                <p className="text-sm font-black text-foreground">{formatCurrency(order.total)}</p>
                               </div>
                               <div>
-                                <p className="text-[10px] font-bold text-zinc-400 uppercase">Amount Paid (Paid)</p>
-                                <p className="text-sm font-black text-emerald-600">{formatCurrency(order.status === 'finalized' ? order.total : 0)}</p>
+                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Amount Paid</p>
+                                <div className="space-y-1">
+                                  {order.payments && order.payments.length > 0 ? (
+                                    order.payments.map((p: any, pIdx: number) => (
+                                      <div key={pIdx} className="flex justify-between items-center bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/20">
+                                        <span className="text-[10px] font-bold text-emerald-600 uppercase">{p.method}</span>
+                                        <span className="text-xs font-black text-emerald-600">{formatCurrency(p.amount)}</span>
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <p className="text-sm font-black text-emerald-600">{formatCurrency(order.status === 'finalized' ? order.total : 0)}</p>
+                                  )}
+                                </div>
                               </div>
                             </div>
                             <div className="space-y-2">
                               <button 
                                 onClick={() => printBill(order)}
-                                className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-all"
+                                className="w-full flex items-center justify-center gap-2 bg-foreground text-background px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:opacity-90 transition-all"
                               >
                                 <Printer size={14} /> Print Bill
                               </button>
@@ -1816,7 +1921,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                   Confirm Order
                                 </button>
                               )}
-                               {order.status === 'confirmed' && (
+                              {order.status === 'confirmed' && (
                                 <button 
                                   onClick={() => updateOrderStatus(order.id, 'preparing')}
                                   className="w-full flex items-center justify-center gap-2 bg-orange-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition-all"
@@ -1859,7 +1964,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               {order.status !== 'finalized' && order.status !== 'cancelled' && (
                                 <button 
                                   onClick={() => updateOrderStatus(order.id, 'cancelled')}
-                                  className="w-full flex items-center justify-center gap-2 bg-white text-red-500 border border-red-100 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-50 transition-all"
+                                  className="w-full flex items-center justify-center gap-2 bg-destructive/10 text-destructive border border-destructive/20 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-destructive/20 transition-all"
                                 >
                                   <Ban size={14} /> Cancel
                                 </button>
@@ -1870,48 +1975,48 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       
                       {/* Expanded Details */}
                       {expandedOrderId === order.id && (
-                        <div className="p-6 bg-zinc-50 border-t border-zinc-200">
+                        <div className="p-6 bg-muted/30 border-t border-border space-y-8">
                           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                             <div className="lg:col-span-2">
-                              <h4 className="font-bold text-zinc-900 mb-4">Order Items</h4>
+                              <h4 className="font-bold text-foreground mb-4">Order Items</h4>
                               <div className="space-y-3">
                                 {order.items.map((item, idx) => (
-                                  <div key={idx} className="flex items-start justify-between bg-white p-4 rounded-xl border border-zinc-200">
+                                  <div key={idx} className="flex items-start justify-between bg-card p-4 rounded-xl border border-border">
                                     <div className="flex items-start gap-3">
-                                      <span className="w-8 h-8 bg-zinc-100 rounded-lg flex items-center justify-center font-black text-sm text-zinc-700">{item.quantity}</span>
+                                      <span className="w-8 h-8 bg-muted rounded-lg flex items-center justify-center font-black text-sm text-foreground">{item.quantity}</span>
                                       <div>
-                                        <span className="font-bold text-zinc-900 block">{item.name}</span>
-                                        {item.notes && <span className="text-xs text-zinc-500 mt-1 block">Note: {item.notes}</span>}
+                                        <span className="font-bold text-foreground block">{item.name}</span>
+                                        {item.notes && <span className="text-xs text-muted-foreground mt-1 block">Note: {item.notes}</span>}
                                       </div>
                                     </div>
-                                    <span className="font-bold text-zinc-900">{formatCurrency(item.price * item.quantity)}</span>
+                                    <span className="font-bold text-foreground">{formatCurrency(item.price * item.quantity)}</span>
                                   </div>
                                 ))}
                               </div>
                               {order.notes && (
-                                <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                                  <p className="text-xs font-bold text-amber-800 uppercase mb-1">Order Notes</p>
-                                  <p className="text-sm text-amber-900">{order.notes}</p>
+                                <div className="mt-4 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
+                                  <p className="text-xs font-bold text-amber-600 uppercase mb-1">Order Notes</p>
+                                  <p className="text-sm text-foreground">{order.notes}</p>
                                 </div>
                               )}
                             </div>
                             
                             <div className="space-y-6">
                               <div>
-                                <h4 className="font-bold text-zinc-900 mb-4">Customer Details</h4>
-                                <div className="bg-white p-4 rounded-xl border border-zinc-200 space-y-3">
+                                <h4 className="font-bold text-foreground mb-4">Customer Details</h4>
+                                <div className="bg-card p-4 rounded-xl border border-border space-y-3">
                                   <div>
-                                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Name</p>
-                                    <p className="text-sm font-medium text-zinc-900">{order.customerName || 'Guest'}</p>
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Name</p>
+                                    <p className="text-sm font-medium text-foreground">{order.customerName || 'Guest'}</p>
                                   </div>
                                   <div>
-                                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Phone</p>
-                                    <p className="text-sm font-medium text-zinc-900">{order.customerPhone || order.address?.phone || 'N/A'}</p>
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Phone</p>
+                                    <p className="text-sm font-medium text-foreground">{order.customerPhone || order.address?.phone || 'N/A'}</p>
                                   </div>
                                   {order.address && (
                                     <div>
-                                      <p className="text-[10px] font-bold text-zinc-400 uppercase">Delivery Address</p>
-                                      <p className="text-sm font-medium text-zinc-900">
+                                      <p className="text-[10px] font-bold text-muted-foreground uppercase">Delivery Address</p>
+                                      <p className="text-sm font-medium text-foreground">
                                         {order.address.apartment && `${order.address.apartment}, `}
                                         {order.address.building && `${order.address.building}, `}
                                         {order.address.street}, {order.address.city}
@@ -1922,34 +2027,144 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               </div>
                               
                               <div>
-                                <h4 className="font-bold text-zinc-900 mb-4">Payment Details</h4>
-                                <div className="bg-white p-4 rounded-xl border border-zinc-200 space-y-3">
-                                  <div className="flex justify-between">
-                                    <span className="text-sm text-zinc-500">Subtotal</span>
-                                    <span className="text-sm font-medium text-zinc-900">{formatCurrency(order.total + (order.discount || 0))}</span>
-                                  </div>
-                                  {order.discount && order.discount > 0 && (
-                                    <div className="flex justify-between text-emerald-600">
-                                      <span className="text-sm">Discount</span>
-                                      <span className="text-sm font-medium">-{formatCurrency(order.discount)}</span>
-                                    </div>
-                                  )}
-                                  <div className="flex justify-between border-t border-zinc-100 pt-3">
-                                    <span className="text-sm font-bold text-zinc-900">Total</span>
-                                    <span className="text-sm font-black text-zinc-900">{formatCurrency(order.total)}</span>
+                                <h4 className="font-bold text-foreground mb-4">Payment Details</h4>
+                                <div className="bg-card p-4 rounded-xl border border-border space-y-3">
+                                  {(() => {
+                                    const subtotal = order.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+                                    const discountAmount = order.discountType === 'percentage' 
+                                      ? (subtotal * ((order.discount || 0) / 100)) 
+                                      : ((order.discount || 0) * 100);
+                                    return (
+                                      <>
+                                        <div className="flex justify-between">
+                                          <span className="text-sm text-muted-foreground">Subtotal</span>
+                                          <span className="text-sm font-medium text-foreground">{formatCurrency(subtotal)}</span>
+                                        </div>
+                                        {order.discount && order.discount > 0 && (
+                                          <div className="flex justify-between text-emerald-600">
+                                            <span className="text-sm">Discount {order.discountType === 'percentage' ? `(${order.discount}%)` : ''}</span>
+                                            <span className="text-sm font-medium">-{formatCurrency(discountAmount)}</span>
+                                          </div>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
+                                  <div className="flex justify-between border-t border-border pt-3">
+                                    <span className="text-sm font-bold text-foreground">Total</span>
+                                    <span className="text-sm font-black text-foreground">{formatCurrency(order.total)}</span>
                                   </div>
                                   {order.amountReceived && (
                                     <>
                                       <div className="flex justify-between">
-                                        <span className="text-sm text-zinc-500">Amount Received</span>
-                                        <span className="text-sm font-medium text-zinc-900">{formatCurrency(order.amountReceived)}</span>
+                                        <span className="text-sm text-muted-foreground">Amount Received</span>
+                                        <span className="text-sm font-medium text-foreground">{formatCurrency(order.amountReceived)}</span>
                                       </div>
                                       <div className="flex justify-between">
-                                        <span className="text-sm text-zinc-500">Change Given</span>
-                                        <span className="text-sm font-medium text-zinc-900">{formatCurrency(order.changeGiven || 0)}</span>
+                                        <span className="text-sm text-muted-foreground">Change Given</span>
+                                        <span className="text-sm font-medium text-foreground">{formatCurrency(order.changeGiven || 0)}</span>
                                       </div>
                                     </>
                                   )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Accounting & Stock Flow (Expanded Section) */}
+                          <div className="p-6 bg-card border border-border rounded-[2rem] space-y-6">
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-xs font-black text-foreground uppercase tracking-widest flex items-center gap-2">
+                                <BarChart3 size={14} className="text-primary" />
+                                Accounting & Stock Flow
+                              </h4>
+                            </div>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                              {/* Journal Entries */}
+                              <div className="space-y-3">
+                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Journal Entries</p>
+                                
+                                <div className="bg-background rounded-2xl border border-border overflow-hidden">
+                                  {journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).length > 0 ? (
+                                    journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).map((entry, idx) => (
+                                      <div key={idx} className="border-b border-border last:border-0">
+                                        <button 
+                                          onClick={() => setExpandedJournalEntryId(expandedJournalEntryId === entry.id ? null : entry.id)}
+                                          className="w-full p-3 flex items-center justify-between hover:bg-muted/50 transition-colors text-left"
+                                        >
+                                          <p className="text-xs font-bold text-foreground">{entry.description}</p>
+                                          <div className="flex items-center gap-2">
+                                            <p className="text-[10px] text-muted-foreground">{entry.date}</p>
+                                            <span className="text-muted-foreground text-[10px]">{expandedJournalEntryId === entry.id ? '▼' : '▶'}</span>
+                                          </div>
+                                        </button>
+                                        
+                                        {expandedJournalEntryId === entry.id && (
+                                          <div className="p-3 bg-muted/20 space-y-1 border-t border-border">
+                                            {entry.lines.map((line: any, lIdx: number) => (
+                                              <div key={lIdx} className="flex items-center justify-between text-[10px]">
+                                                <span className="text-muted-foreground">{line.accountName}</span>
+                                                <div className="flex gap-4">
+                                                  <span className={line.debit > 0 ? 'text-emerald-500 font-bold' : 'text-muted-foreground'}>{formatCurrency(line.debit)}</span>
+                                                  <span className={line.credit > 0 ? 'text-blue-500 font-bold' : 'text-muted-foreground'}>{formatCurrency(line.credit)}</span>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <div className="p-4 text-center">
+                                      <p className="text-[10px] text-muted-foreground italic">No formal journal entries found for this order.</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Stock Flow */}
+                              <div className="space-y-3">
+                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Associated Stock Flow</p>
+                                
+                                <div className="bg-background rounded-2xl border border-border overflow-hidden">
+                                  {order.items.map((orderItem, idx) => {
+                                    const menuItem = items.find(i => i.id === orderItem.itemId);
+                                    const recipe = menuItem?.recipe || [];
+                                    const itemKey = `${order.id}-${idx}`;
+                                    
+                                    return (
+                                      <div key={idx} className="border-b border-border last:border-0">
+                                        <button 
+                                          onClick={() => setExpandedStockItemId(expandedStockItemId === itemKey ? null : itemKey)}
+                                          className="w-full p-3 flex items-center justify-between hover:bg-muted/50 transition-colors text-left"
+                                        >
+                                          <p className="text-xs font-black text-foreground">{orderItem.name} <span className="text-muted-foreground font-bold ml-1">x{orderItem.quantity}</span></p>
+                                          <span className="text-muted-foreground text-[10px]">{expandedStockItemId === itemKey ? '▼' : '▶'}</span>
+                                        </button>
+                                        
+                                        {expandedStockItemId === itemKey && (
+                                          <div className="p-3 bg-muted/20 space-y-2 border-t border-border">
+                                            {recipe.length > 0 ? (
+                                              recipe.map((ing, iIdx) => {
+                                                const invItem = inventory.find(inv => inv.id === ing.inventoryItemId);
+                                                return (
+                                                  <div key={iIdx} className="flex justify-between items-center">
+                                                    <p className="text-[10px] font-bold text-muted-foreground">{invItem?.name || 'Unknown Ingredient'}</p>
+                                                    <p className="text-[10px] font-black text-destructive">-{ (ing.quantity * orderItem.quantity).toFixed(2) } {invItem?.unit}</p>
+                                                  </div>
+                                                );
+                                              })
+                                            ) : (
+                                              <div className="flex justify-between items-center">
+                                                <p className="text-[10px] font-bold text-muted-foreground italic">No recipe defined</p>
+                                                <p className="text-[10px] font-black text-destructive">-{orderItem.quantity} pcs</p>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                             </div>
@@ -2330,7 +2545,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                           await addDoc(collection(db, 'journal'), {
                                             type: 'expense',
                                             amount: newAmount * purchasePrice, // Now in cents
-                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrency(purchasePrice)})${supplier ? ` from ${supplier.name}` : ''}`,
+                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrencyDirect(purchasePrice)})${supplier ? ` from ${supplier.name}` : ''}`,
                                             timestamp: serverTimestamp(),
                                             vendorId: adjustingStock.supplierId
                                           });
@@ -2491,7 +2706,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 <div className="p-8 bg-emerald-50 rounded-[2.5rem] border border-emerald-100">
                   <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-2">Total Revenue</p>
                   <h3 className="text-4xl font-black text-emerald-900">
-                    {formatCurrency(totalRevenue / 100)}
+                    {formatCurrency(totalRevenue)}
                   </h3>
                 </div>
                 <div className="p-8 bg-blue-50 rounded-[2.5rem] border border-blue-100">
@@ -2503,7 +2718,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 <div className="p-8 bg-orange-50 rounded-[2.5rem] border border-orange-100">
                   <p className="text-xs font-bold text-orange-600 uppercase tracking-widest mb-2">Total Expenses</p>
                   <h3 className="text-4xl font-black text-orange-900">
-                    {formatCurrency(totalExpenses / 100)}
+                    {formatCurrency(totalExpenses)}
                   </h3>
                 </div>
               </div>
@@ -2569,7 +2784,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   ].map(group => (
                     <div key={group.name} className={`p-4 rounded-2xl border border-${group.color}-100 bg-${group.color}-50/30`}>
                       <p className={`text-[10px] font-bold text-${group.color}-600 uppercase tracking-widest mb-1`}>{group.name}</p>
-                      <p className="text-lg font-black text-zinc-900">{formatCurrency(group.balance / 100)}</p>
+                      <p className="text-lg font-black text-zinc-900">{formatCurrency(group.balance)}</p>
                     </div>
                   ))}
                 </div>
@@ -2648,7 +2863,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               {formatCurrency(Math.max(
                                 entry.lines.reduce((sum: number, l: any) => sum + l.debit, 0),
                                 entry.lines.reduce((sum: number, l: any) => sum + l.credit, 0)
-                              ) / 100)}
+                              ))}
                             </td>
                             <td className="px-6 py-4 text-right">
                               <button 
@@ -2693,8 +2908,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                           <div key={idx} className="flex justify-between text-xs font-medium py-1">
                                             <span className="text-zinc-600">{line.accountName}</span>
                                             <div className="flex gap-8">
-                                              <span className="w-24 text-right text-emerald-600">{line.debit > 0 ? formatCurrency(line.debit / 100) : '-'}</span>
-                                              <span className="w-24 text-right text-red-600">{line.credit > 0 ? formatCurrency(line.credit / 100) : '-'}</span>
+                                              <span className="w-24 text-right text-emerald-600">{line.debit > 0 ? formatCurrency(line.debit) : '-'}</span>
+                                              <span className="w-24 text-right text-red-600">{line.credit > 0 ? formatCurrency(line.credit) : '-'}</span>
                                             </div>
                                           </div>
                                         ))}
@@ -3575,11 +3790,11 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-bold text-zinc-400 uppercase ml-1">Price (in cents)</label>
+                      <label className="text-xs font-bold text-zinc-400 uppercase ml-1">Price</label>
                       <input 
                         type="number" 
-                        step="1"
-                        placeholder="e.g. 1000 for 10.00" 
+                        step="0.01"
+                        placeholder="e.g. 10.50" 
                         className="w-full p-4 rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all"
                         value={newForm.price}
                         onChange={e => setNewForm({...newForm, price: Number(e.target.value)})}
@@ -3589,9 +3804,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       <label className="text-xs font-bold text-zinc-400 uppercase ml-1">Category</label>
                       <select 
                         className="w-full p-4 rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all appearance-none bg-white"
-                        value={newForm.category}
+                        value={newForm.category || ''}
                         onChange={e => setNewForm({...newForm, category: e.target.value})}
                       >
+                        <option value="" disabled>Select a category</option>
                         {categories.map(cat => (
                           <option key={cat.id} value={cat.id}>{cat.name}</option>
                         ))}
@@ -3662,10 +3878,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               />
                             </div>
                             <div className="space-y-1">
-                              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Price (in cents)</label>
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Price</label>
                               <input 
                                 type="number" 
-                                step="1"
+                                step="0.01"
                                 className="w-full p-2 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none"
                                 value={editForm.price}
                                 onChange={e => setEditForm({...editForm, price: Number(e.target.value)})}
@@ -3680,6 +3896,19 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               value={editForm.image}
                               onChange={e => setEditForm({...editForm, image: e.target.value})}
                             />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Category</label>
+                            <select 
+                              className="w-full p-2 border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none bg-white"
+                              value={editForm.category || ''}
+                              onChange={e => setEditForm({...editForm, category: e.target.value})}
+                            >
+                              <option value="" disabled>Select a category</option>
+                              {categories.map(cat => (
+                                <option key={cat.id} value={cat.id}>{cat.name}</option>
+                              ))}
+                            </select>
                           </div>
                           <div className="space-y-1">
                             <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Description</label>
@@ -3957,7 +4186,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
 function StaffSection({ staff }: { staff: any[] }) {
   const [isAdding, setIsAdding] = useState(false);
-  const [form, setForm] = useState({ name: '', role: 'waiter', email: '', phone: '', password: '', permissions: {} as any });
+  const [form, setForm] = useState({ name: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', permissions: {} as any });
   const [error, setError] = useState('');
   const [editingPermissionsId, setEditingPermissionsId] = useState<string | null>(null);
 
@@ -3976,30 +4205,36 @@ function StaffSection({ staff }: { staff: any[] }) {
     { id: 'crm', name: 'CRM', icon: <Users size={14} /> },
     { id: 'users', name: 'Users', icon: <UserCheck size={14} /> },
     { id: 'settings', name: 'Settings', icon: <Settings size={14} /> },
+    { id: 'delivery', name: 'Delivery', icon: <Truck size={14} /> },
   ];
 
   const handleAdd = async () => {
     setError('');
-    if (!form.name || !form.password) {
-      setError('Name and password are required.');
+    if (!form.name || !form.email) {
+      setError('Name and email are required.');
       return;
     }
-    const email = form.email || `${form.name.toLowerCase().replace(/\s+/g, '')}@system.local`;
+    const email = form.email;
     try {
-      console.log('Attempting to create user with email:', email);
-      // Create user in Firebase Auth using secondary app to avoid logging out admin
-      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, form.password);
-      console.log('User created in Auth:', userCredential.user.uid);
+      console.log('Attempting to add staff with email:', email);
       
-      // Create auth user profile in 'users' collection
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        name: form.name,
-        email: email,
-        role: form.role,
-        createdAt: serverTimestamp(),
-        permissions: form.permissions
-      });
-      console.log('User profile created in Firestore');
+      // Check if user already exists in 'users' collection
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('email', '==', email));
+      const querySnapshot = await getDocs(q);
+      
+      let existingUid = '';
+      if (!querySnapshot.empty) {
+        const userDoc = querySnapshot.docs[0];
+        existingUid = userDoc.id;
+        // Update existing user profile
+        await updateDoc(doc(db, 'users', existingUid), {
+          role: form.role,
+          permissions: form.permissions,
+          vehicle: form.vehicle || null
+        });
+        console.log('Updated existing user profile in users collection');
+      }
 
       // Create staff record
       await addDoc(collection(db, 'staff'), {
@@ -4007,28 +4242,21 @@ function StaffSection({ staff }: { staff: any[] }) {
         email: email,
         phone: form.phone,
         role: form.role,
-        uid: userCredential.user.uid,
+        vehicle: form.vehicle || null,
+        ...(existingUid ? { uid: existingUid } : {}),
         createdAt: serverTimestamp(),
         active: true,
         permissions: form.permissions
       });
       console.log('Staff record created in Firestore');
 
-      await signOut(secondaryAuth); // Sign out the secondary instance immediately
-
-      setForm({ name: '', role: 'waiter', email: '', phone: '', password: '', permissions: {} });
+      setForm({ name: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', permissions: {} });
       setIsAdding(false);
       alert('Staff member added successfully!');
     } catch (err: any) {
       console.error('Error adding staff:', err);
-      if (err.code === 'auth/operation-not-allowed') {
-        setError('Email/Password authentication is not enabled. Please enable it in the Firebase Console under Authentication > Sign-in method.');
-      } else {
-        setError(err.message || 'Failed to add staff');
-      }
-      if (err.code !== 'auth/email-already-in-use' && err.code !== 'auth/operation-not-allowed') {
-        handleFirestoreError(err, OperationType.CREATE, 'staff');
-      }
+      setError(err.message || 'Failed to add staff');
+      handleFirestoreError(err, OperationType.CREATE, 'staff');
     }
   };
 
@@ -4075,7 +4303,7 @@ function StaffSection({ staff }: { staff: any[] }) {
           <div className="p-3 bg-primary/10 text-primary rounded-2xl">
             <Users size={24} />
           </div>
-          <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">Staff Management</h2>
+          <h2 className="text-2xl font-black text-foreground uppercase tracking-tight">Staff Management</h2>
         </div>
         <button 
           type="button"
@@ -4087,19 +4315,19 @@ function StaffSection({ staff }: { staff: any[] }) {
       </div>
 
       {isAdding && (
-        <div className="p-8 bg-zinc-50 border border-zinc-200 rounded-[2.5rem] grid grid-cols-1 md:grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-4">
+        <div className="p-8 bg-card border border-border rounded-[2.5rem] grid grid-cols-1 md:grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-4">
           {error && (
-            <div className="md:col-span-2 p-4 bg-red-50 text-red-600 rounded-xl text-sm font-bold">
+            <div className="md:col-span-2 p-4 bg-destructive/10 text-destructive rounded-xl text-sm font-bold">
               {error}
             </div>
           )}
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Full Name</label>
-            <input type="text" className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
+            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Full Name</label>
+            <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Role</label>
-            <select className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
+            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Role</label>
+            <select className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
               <option value="manager">Manager</option>
               <option value="waiter">Waiter</option>
               <option value="chef">Chef</option>
@@ -4107,23 +4335,29 @@ function StaffSection({ staff }: { staff: any[] }) {
             </select>
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Email</label>
-            <input type="email" className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.email} onChange={e => setForm({...form, email: e.target.value})} />
+            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Email</label>
+            <input type="email" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.email} onChange={e => setForm({...form, email: e.target.value})} />
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Phone</label>
-            <input type="text" className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} />
+            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Phone</label>
+            <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} />
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Password</label>
-            <input type="password" placeholder="Set login password" className="w-full p-3 bg-white border border-zinc-200 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.password} onChange={e => setForm({...form, password: e.target.value})} />
+            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Password</label>
+            <input type="password" placeholder="For mobile app login" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.password} onChange={e => setForm({...form, password: e.target.value})} />
           </div>
+          {form.role === 'driver' && (
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Vehicle Details</label>
+              <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.vehicle} onChange={e => setForm({...form, vehicle: e.target.value})} placeholder="e.g. Bike, Car (Plate No)" />
+            </div>
+          )}
             <div className="md:col-span-2 space-y-2">
-              <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Assign Modules</label>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-4 bg-white border border-zinc-200 rounded-xl">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Assign Modules</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-4 bg-background border border-border rounded-xl">
                 {modules.map(mod => (
                   <label key={mod.id} className={`flex items-center gap-2 p-2 rounded-lg border transition-all cursor-pointer group ${
-                    form.permissions[mod.id] ? 'bg-primary/5 border-primary/20' : 'bg-transparent border-transparent hover:bg-zinc-50'
+                    form.permissions[mod.id] ? 'bg-primary/5 border-primary/20' : 'bg-transparent border-transparent hover:bg-muted'
                   }`}>
                     <input 
                       type="checkbox" 
@@ -4138,10 +4372,10 @@ function StaffSection({ staff }: { staff: any[] }) {
                       })}
                     />
                     <div className="flex items-center gap-2">
-                      <span className={`${form.permissions[mod.id] ? 'text-primary' : 'text-zinc-400'}`}>
+                      <span className={`${form.permissions[mod.id] ? 'text-primary' : 'text-muted-foreground'}`}>
                         {mod.icon}
                       </span>
-                      <span className={`text-[10px] font-bold ${form.permissions[mod.id] ? 'text-zinc-900' : 'text-zinc-500'}`}>{mod.name}</span>
+                      <span className={`text-[10px] font-bold ${form.permissions[mod.id] ? 'text-foreground' : 'text-muted-foreground'}`}>{mod.name}</span>
                     </div>
                   </label>
                 ))}
@@ -4149,20 +4383,20 @@ function StaffSection({ staff }: { staff: any[] }) {
             </div>
           <div className="md:col-span-2 flex gap-4 pt-4">
             <button onClick={handleAdd} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary/90 transition-all">Save Staff</button>
-            <button onClick={() => setIsAdding(false)} className="flex-1 py-3 bg-zinc-200 text-zinc-600 rounded-xl font-bold hover:bg-zinc-300 transition-all">Cancel</button>
+            <button onClick={() => setIsAdding(false)} className="flex-1 py-3 bg-muted text-muted-foreground rounded-xl font-bold hover:bg-muted/80 transition-all">Cancel</button>
           </div>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {staff.map(member => (
-          <div key={member.id} className="p-6 bg-white border border-zinc-100 rounded-[2.5rem] hover:shadow-xl hover:shadow-zinc-200/50 transition-all group">
+          <div key={member.id} className="p-6 bg-card border border-border rounded-[2.5rem] hover:shadow-xl hover:shadow-primary/5 transition-all group">
             <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 bg-zinc-100 rounded-2xl flex items-center justify-center text-zinc-400 font-black text-xl">
+              <div className="w-12 h-12 bg-muted rounded-2xl flex items-center justify-center text-muted-foreground font-black text-xl">
                 {member.name[0]}
               </div>
               <div className="flex-1">
-                <h4 className="font-bold text-zinc-900">{member.name}</h4>
+                <h4 className="font-bold text-foreground">{member.name}</h4>
                 <select 
                   className="text-[10px] text-primary font-bold uppercase tracking-widest bg-transparent outline-none cursor-pointer"
                   value={member.role}
@@ -4177,7 +4411,7 @@ function StaffSection({ staff }: { staff: any[] }) {
               </div>
               <button 
                 onClick={() => setEditingPermissionsId(editingPermissionsId === member.id ? null : member.id)}
-                className="p-2 text-zinc-400 hover:text-primary transition-colors"
+                className="p-2 text-muted-foreground hover:text-primary transition-colors"
                 title="Manage Permissions"
               >
                 <ShieldCheck size={20} />
@@ -4185,9 +4419,9 @@ function StaffSection({ staff }: { staff: any[] }) {
             </div>
             
             {editingPermissionsId === member.id && (
-              <div className="mb-4 p-5 bg-zinc-50 rounded-[2rem] border border-zinc-100 animate-in fade-in zoom-in-95">
+              <div className="mb-4 p-5 bg-muted/30 rounded-[2rem] border border-border animate-in fade-in zoom-in-95">
                 <div className="flex items-center justify-between mb-4">
-                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Module Permissions</p>
+                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Module Permissions</p>
                   <button 
                     onClick={() => {
                       const allPerms = modules.reduce((acc, mod) => ({ ...acc, [mod.id]: true }), {});
@@ -4202,14 +4436,14 @@ function StaffSection({ staff }: { staff: any[] }) {
                   {modules.map(mod => (
                     <label key={mod.id} className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer group ${
                       member.permissions?.[mod.id] 
-                        ? 'bg-white border-primary/20 shadow-sm' 
-                        : 'bg-transparent border-transparent hover:bg-white/50'
+                        ? 'bg-card border-primary/20 shadow-sm' 
+                        : 'bg-transparent border-transparent hover:bg-muted/50'
                     }`}>
                       <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-lg ${member.permissions?.[mod.id] ? 'bg-primary/10 text-primary' : 'bg-zinc-200 text-zinc-400'}`}>
+                        <div className={`p-2 rounded-lg ${member.permissions?.[mod.id] ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
                           {mod.icon}
                         </div>
-                        <span className={`text-xs font-bold ${member.permissions?.[mod.id] ? 'text-zinc-900' : 'text-zinc-500'}`}>{mod.name}</span>
+                        <span className={`text-xs font-bold ${member.permissions?.[mod.id] ? 'text-foreground' : 'text-muted-foreground'}`}>{mod.name}</span>
                       </div>
                       <input 
                         type="checkbox" 
@@ -4223,7 +4457,7 @@ function StaffSection({ staff }: { staff: any[] }) {
               </div>
             )}
 
-            <div className="space-y-2 text-sm text-zinc-500">
+            <div className="space-y-2 text-sm text-muted-foreground">
               <p className="flex items-center gap-2"><Phone size={14} /> {member.phone || 'No phone'}</p>
               <p className="flex items-center gap-2"><FileText size={14} /> {member.email}</p>
             </div>
@@ -4574,8 +4808,8 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
                 </td>
                 <td className="px-6 py-4 text-sm font-bold text-zinc-900">{run.menuItemName}</td>
                 <td className="px-6 py-4 text-sm font-black text-primary">+{run.quantity}</td>
-                <td className="px-6 py-4 text-sm font-bold text-zinc-600 text-right">{formatCurrency((run.costPerUnit || 0) / 100)}</td>
-                <td className="px-6 py-4 text-sm font-bold text-zinc-900 text-right">{formatCurrency((run.totalCost || 0) / 100)}</td>
+                <td className="px-6 py-4 text-sm font-bold text-zinc-600 text-right">{formatCurrency(run.costPerUnit || 0)}</td>
+                <td className="px-6 py-4 text-sm font-bold text-zinc-900 text-right">{formatCurrency(run.totalCost || 0)}</td>
               </tr>
             ))}
             {productionHistory.length === 0 && (
@@ -4835,20 +5069,9 @@ function ManagementSection({ title, data, collectionName, icon }: { title: strin
   );
 }
 
-function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventory: InventoryItem[] }) {
+function SuppliersSection({ suppliers }: { suppliers: any[] }) {
   const [isAddingSupplier, setIsAddingSupplier] = useState(false);
-  const [isAddingInvoice, setIsAddingInvoice] = useState(false);
-  const [selectedSupplier, setSelectedSupplier] = useState<any | null>(null);
-  
   const [supplierForm, setSupplierForm] = useState({ name: '', phone: '', email: '', address: '' });
-  const [invoiceForm, setInvoiceForm] = useState({
-    invoiceNumber: '',
-    date: new Date().toISOString().split('T')[0],
-    items: [] as { inventoryItemId: string, quantity: number, costPerUnit: number }[],
-    amountPaid: 0,
-    totalAmount: 0,
-    accountId: 'cash'
-  });
 
   const handleAddSupplier = async () => {
     if (!supplierForm.name) return;
@@ -4863,6 +5086,263 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
       handleFirestoreError(err, OperationType.CREATE, 'vendors');
     }
   };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-black text-foreground uppercase tracking-tight">Suppliers</h2>
+          <p className="text-sm text-muted-foreground font-medium">Manage your vendors and contact information</p>
+        </div>
+        <button 
+          onClick={() => setIsAddingSupplier(true)}
+          className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
+        >
+          <Plus size={18} /> Add Supplier
+        </button>
+      </div>
+
+      {isAddingSupplier && (
+        <div className="p-6 bg-card rounded-3xl border border-border mb-6">
+          <h4 className="font-bold text-foreground mb-4">Add New Supplier</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <input
+              type="text"
+              placeholder="Supplier Name"
+              className="p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
+              value={supplierForm.name}
+              onChange={e => setSupplierForm({ ...supplierForm, name: e.target.value })}
+            />
+            <input
+              type="text"
+              placeholder="Phone"
+              className="p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
+              value={supplierForm.phone}
+              onChange={e => setSupplierForm({ ...supplierForm, phone: e.target.value })}
+            />
+            <input
+              type="email"
+              placeholder="Email"
+              className="p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
+              value={supplierForm.email}
+              onChange={e => setSupplierForm({ ...supplierForm, email: e.target.value })}
+            />
+            <input
+              type="text"
+              placeholder="Address"
+              className="p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
+              value={supplierForm.address}
+              onChange={e => setSupplierForm({ ...supplierForm, address: e.target.value })}
+            />
+          </div>
+          <div className="flex justify-end gap-3 mt-4">
+            <button
+              onClick={() => setIsAddingSupplier(false)}
+              className="px-4 py-2 rounded-xl text-sm font-bold text-muted-foreground hover:bg-muted transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleAddSupplier}
+              className="px-4 py-2 rounded-xl text-sm font-bold bg-primary text-white hover:bg-primary/90 transition-colors"
+            >
+              Save Supplier
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {suppliers.map(supplier => (
+          <div key={supplier.id} className="p-6 bg-card rounded-3xl border border-border hover:shadow-xl hover:shadow-primary/5 transition-all">
+            <div className="flex items-center gap-4 mb-4">
+              <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+                <Truck size={24} />
+              </div>
+              <div>
+                <h3 className="font-bold text-foreground">{supplier.name}</h3>
+                <p className="text-xs text-muted-foreground font-medium">{supplier.phone}</p>
+              </div>
+            </div>
+            {supplier.email && <p className="text-sm text-foreground/80 mb-1">Email: {supplier.email}</p>}
+            {supplier.address && <p className="text-sm text-foreground/80">Address: {supplier.address}</p>}
+          </div>
+        ))}
+        {suppliers.length === 0 && (
+          <div className="col-span-full py-20 text-center bg-muted/20 rounded-[2.5rem] border-2 border-dashed border-border">
+            <Truck size={48} className="text-muted-foreground/20 mx-auto mb-4" />
+            <h3 className="text-lg font-bold text-foreground">No suppliers found</h3>
+            <p className="text-muted-foreground">Add your first supplier to start tracking purchases</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeliverySection({ drivers }: { drivers: any[] }) {
+  const [isAddingDriver, setIsAddingDriver] = useState(false);
+  const [newDriver, setNewDriver] = useState({ name: '', email: '', phone: '', vehicle: '', role: 'driver', status: 'active' });
+
+  const handleAddDriver = async () => {
+    if (!newDriver.name || !newDriver.email || !newDriver.phone) {
+      alert('Name, email, and phone are required.');
+      return;
+    }
+    try {
+      // Check if user already exists in 'users' collection
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('email', '==', newDriver.email));
+      const querySnapshot = await getDocs(q);
+      
+      let existingUid = '';
+      if (!querySnapshot.empty) {
+        const userDoc = querySnapshot.docs[0];
+        existingUid = userDoc.id;
+        await updateDoc(doc(db, 'users', existingUid), {
+          role: 'driver',
+          vehicle: newDriver.vehicle || null
+        });
+      }
+
+      await addDoc(collection(db, 'staff'), {
+        ...newDriver,
+        ...(existingUid ? { uid: existingUid } : {}),
+        createdAt: serverTimestamp(),
+        active: true,
+        permissions: { delivery: true }
+      });
+      
+      setIsAddingDriver(false);
+      setNewDriver({ name: '', email: '', phone: '', vehicle: '', role: 'driver', status: 'active' });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'staff');
+    }
+  };
+
+  const deleteDriver = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this driver?')) return;
+    try {
+      await deleteDoc(doc(db, 'staff', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `staff/${id}`);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-black text-foreground uppercase tracking-tight">Delivery Management</h2>
+          <p className="text-sm text-muted-foreground font-medium">Manage drivers and delivery assignments</p>
+        </div>
+        <button 
+          onClick={() => setIsAddingDriver(true)}
+          className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
+        >
+          <Plus size={18} /> Add New Driver
+        </button>
+      </div>
+
+      {isAddingDriver && (
+        <div className="p-6 bg-card rounded-3xl border border-border mb-6 space-y-6">
+          <h4 className="font-bold text-foreground">Add New Driver</h4>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Driver Name</label>
+              <input 
+                type="text" 
+                className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
+                value={newDriver.name}
+                onChange={e => setNewDriver({...newDriver, name: e.target.value})}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Email Address</label>
+              <input 
+                type="email" 
+                className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
+                value={newDriver.email}
+                onChange={e => setNewDriver({...newDriver, email: e.target.value})}
+                placeholder="driver@example.com"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Phone Number</label>
+              <input 
+                type="text" 
+                className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
+                value={newDriver.phone}
+                onChange={e => setNewDriver({...newDriver, phone: e.target.value})}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Vehicle Details</label>
+              <input 
+                type="text" 
+                className="w-full p-3 border border-border rounded-xl text-sm bg-background focus:ring-2 focus:ring-primary outline-none" 
+                value={newDriver.vehicle}
+                onChange={e => setNewDriver({...newDriver, vehicle: e.target.value})}
+                placeholder="e.g. Bike, Car (Plate No)"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-3">
+            <button onClick={() => setIsAddingDriver(false)} className="px-6 py-3 rounded-xl text-sm font-bold text-muted-foreground hover:bg-muted transition-colors">Cancel</button>
+            <button onClick={handleAddDriver} className="px-6 py-3 rounded-xl text-sm font-bold bg-primary text-white hover:bg-primary/90 transition-colors">Save Driver</button>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {drivers.map(driver => (
+          <div key={driver.id} className="bg-card p-6 rounded-[2.5rem] border border-border shadow-sm hover:shadow-md transition-all group">
+            <div className="flex justify-between items-start mb-4">
+              <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+                <Truck size={24} />
+              </div>
+              <button 
+                onClick={() => deleteDriver(driver.id)}
+                className="p-2 text-red-500 hover:bg-red-50 rounded-xl opacity-0 group-hover:opacity-100 transition-all"
+              >
+                <Trash2 size={18} />
+              </button>
+            </div>
+            <h3 className="text-lg font-black text-foreground mb-1">{driver.name}</h3>
+            <p className="text-sm text-muted-foreground mb-4 flex items-center gap-2">
+              <Phone size={14} /> {driver.phone}
+            </p>
+            <div className="flex items-center justify-between pt-4 border-t border-border">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${driver.status === 'active' ? 'bg-emerald-500' : 'bg-zinc-300'}`} />
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">{driver.status}</span>
+              </div>
+              <span className="text-[10px] font-black text-primary uppercase bg-primary/5 px-2 py-1 rounded">{driver.vehicle || 'No Vehicle'}</span>
+            </div>
+          </div>
+        ))}
+        {drivers.length === 0 && !isAddingDriver && (
+          <div className="col-span-full py-20 text-center bg-muted/20 rounded-[2.5rem] border-2 border-dashed border-border">
+            <Truck size={48} className="text-muted-foreground/20 mx-auto mb-4" />
+            <p className="text-muted-foreground font-bold uppercase text-xs tracking-widest">No drivers registered yet</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], inventory: InventoryItem[], bills: any[] }) {
+  const [isAddingInvoice, setIsAddingInvoice] = useState(false);
+  const [selectedSupplier, setSelectedSupplier] = useState<any | null>(null);
+  const [invoiceForm, setInvoiceForm] = useState({
+    invoiceNumber: '',
+    date: new Date().toISOString().split('T')[0],
+    items: [] as { inventoryItemId: string, quantity: number, costPerUnit: number }[],
+    amountPaid: 0,
+    totalAmount: 0,
+    accountId: 'cash'
+  });
 
   const handleAddInvoiceItem = () => {
     if (inventory.length === 0) return;
@@ -4888,53 +5368,40 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
 
   const handleSaveInvoice = async () => {
     if (!selectedSupplier || invoiceForm.items.length === 0) return;
-    
     try {
-      // 1. Save the invoice (Bill)
+      // 1. Save the bill
       const billRef = await addDoc(collection(db, 'bills'), {
-        vendorId: selectedSupplier.id,
-        vendorName: selectedSupplier.name,
-        invoiceNumber: invoiceForm.invoiceNumber,
-        date: invoiceForm.date,
-        items: invoiceForm.items.map(item => ({...item, costPerUnit: Math.round(item.costPerUnit * 100)})),
+        ...invoiceForm,
         totalAmount: Math.round(invoiceForm.totalAmount * 100),
         amountPaid: Math.round(invoiceForm.amountPaid * 100),
-        status: invoiceForm.amountPaid >= invoiceForm.totalAmount ? 'paid' : 'pending',
-        createdAt: serverTimestamp()
+        supplierId: selectedSupplier.id,
+        supplierName: selectedSupplier.name,
+        type: 'purchase',
+        timestamp: serverTimestamp()
       });
 
-      // 2. Update Inventory
+      // 2. Update inventory stock and record in journal
       for (const item of invoiceForm.items) {
         const invItem = inventory.find(i => i.id === item.inventoryItemId);
         if (invItem) {
-          // Calculate new average cost
-          const oldTotalValue = invItem.stock * (invItem.costPerUnit || 0);
-          const newPurchaseValue = item.quantity * Math.round(item.costPerUnit * 100);
-          const newTotalQuantity = invItem.stock + item.quantity;
-          const newAverageCost = newTotalQuantity > 0 ? Math.round((oldTotalValue + newPurchaseValue) / newTotalQuantity) : 0;
-
-          await updateDoc(doc(db, 'inventory', invItem.id), {
-            stock: invItem.stock + item.quantity,
-            costPerUnit: newAverageCost,
+          await updateDoc(doc(db, 'inventory', item.inventoryItemId), {
+            stock: (invItem.stock || 0) + item.quantity,
             lastUpdated: serverTimestamp()
+          });
+
+          // Record individual item purchase in journal for tracking
+          await addDoc(collection(db, 'journal'), {
+            type: 'expense',
+            amount: Math.round(item.quantity * item.costPerUnit * 100),
+            description: `Purchase: ${invItem.name} (${item.quantity} ${invItem.unit} @ ${formatCurrencyDirect(item.costPerUnit)}) from ${selectedSupplier.name}`,
+            timestamp: serverTimestamp(),
+            vendorId: selectedSupplier.id,
+            billId: billRef.id
           });
         }
       }
 
-      // 3. Record Accounting Journal Entry for the amount paid
-      if (invoiceForm.amountPaid > 0) {
-        await addDoc(collection(db, 'journal'), {
-          type: 'expense',
-          amount: Math.round(invoiceForm.amountPaid * 100),
-          description: `Payment for Invoice #${invoiceForm.invoiceNumber} from ${selectedSupplier.name}`,
-          timestamp: serverTimestamp(),
-          billId: billRef.id,
-          vendorId: selectedSupplier.id,
-          accountId: invoiceForm.accountId
-        });
-      }
-
-      // Also create a formal journal entry
+      // 3. Create a formal journal entry for the whole invoice
       await addDoc(collection(db, 'journal_entries'), {
         date: invoiceForm.date,
         reference: invoiceForm.invoiceNumber,
@@ -4970,84 +5437,26 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
     <div className="space-y-8">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">Suppliers & Purchases</h2>
-          <p className="text-sm text-zinc-500 font-medium">Manage vendors, purchase orders, and stock intake</p>
+          <h2 className="text-2xl font-black text-foreground uppercase tracking-tight">Purchases</h2>
+          <p className="text-sm text-muted-foreground font-medium">Record and track inventory purchases</p>
         </div>
-        <div className="flex gap-2">
-          <button 
-            onClick={() => setIsAddingSupplier(true)}
-            className="flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-50 transition-all"
-          >
-            <Plus size={14} /> Add Supplier
-          </button>
-          <button 
-            onClick={() => setIsAddingInvoice(true)}
-            className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
-          >
-            <Plus size={18} /> Record Purchase
-          </button>
-        </div>
+        <button 
+          onClick={() => setIsAddingInvoice(true)}
+          className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
+        >
+          <Plus size={18} /> Record Purchase
+        </button>
       </div>
 
-      {isAddingSupplier && (
-        <div className="p-6 bg-white rounded-3xl border border-zinc-200 mb-6">
-          <h4 className="font-bold text-zinc-900 mb-4">Add New Supplier</h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <input
-              type="text"
-              placeholder="Supplier Name"
-              className="p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
-              value={supplierForm.name}
-              onChange={e => setSupplierForm({ ...supplierForm, name: e.target.value })}
-            />
-            <input
-              type="text"
-              placeholder="Phone"
-              className="p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
-              value={supplierForm.phone}
-              onChange={e => setSupplierForm({ ...supplierForm, phone: e.target.value })}
-            />
-            <input
-              type="email"
-              placeholder="Email"
-              className="p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
-              value={supplierForm.email}
-              onChange={e => setSupplierForm({ ...supplierForm, email: e.target.value })}
-            />
-            <input
-              type="text"
-              placeholder="Address"
-              className="p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
-              value={supplierForm.address}
-              onChange={e => setSupplierForm({ ...supplierForm, address: e.target.value })}
-            />
-          </div>
-          <div className="flex justify-end gap-3 mt-4">
-            <button
-              onClick={() => setIsAddingSupplier(false)}
-              className="px-4 py-2 rounded-xl text-sm font-bold text-zinc-500 hover:bg-zinc-200 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleAddSupplier}
-              className="px-4 py-2 rounded-xl text-sm font-bold bg-primary text-white hover:bg-primary/90 transition-colors"
-            >
-              Save Supplier
-            </button>
-          </div>
-        </div>
-      )}
-
       {isAddingInvoice && (
-        <div className="p-6 bg-white rounded-3xl border border-zinc-200 mb-6 space-y-6">
-          <h4 className="font-bold text-zinc-900">Record Purchase Invoice</h4>
+        <div className="p-6 bg-card rounded-3xl border border-border mb-6 space-y-6">
+          <h4 className="font-bold text-foreground">Record Purchase Invoice</h4>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1 block">Supplier</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1 block">Supplier</label>
               <select
-                className="w-full p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
+                className="w-full p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
                 value={selectedSupplier?.id || ''}
                 onChange={e => setSelectedSupplier(suppliers.find(s => s.id === e.target.value) || null)}
               >
@@ -5058,28 +5467,28 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1 block">Invoice Number</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1 block">Invoice Number</label>
               <input
                 type="text"
                 placeholder="INV-..."
-                className="w-full p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
+                className="w-full p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
                 value={invoiceForm.invoiceNumber}
                 onChange={e => setInvoiceForm({ ...invoiceForm, invoiceNumber: e.target.value })}
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1 block">Date</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1 block">Date</label>
               <input
                 type="date"
-                className="w-full p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
+                className="w-full p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
                 value={invoiceForm.date}
                 onChange={e => setInvoiceForm({ ...invoiceForm, date: e.target.value })}
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1 block">Payment Account</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1 block">Payment Account</label>
               <select
-                className="w-full p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none"
+                className="w-full p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none"
                 value={invoiceForm.accountId}
                 onChange={e => setInvoiceForm({ ...invoiceForm, accountId: e.target.value })}
               >
@@ -5091,7 +5500,7 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
 
           <div className="space-y-4">
             <div className="flex justify-between items-center">
-              <h5 className="font-bold text-zinc-700">Purchased Items</h5>
+              <h5 className="font-bold text-foreground/80">Purchased Items</h5>
               <button 
                 onClick={handleAddInvoiceItem}
                 className="text-xs font-bold text-primary hover:underline flex items-center gap-1"
@@ -5101,10 +5510,10 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
             </div>
             
             {invoiceForm.items.map((item, index) => (
-              <div key={index} className="flex gap-4 items-center bg-zinc-50 p-4 rounded-2xl border border-zinc-100">
+              <div key={index} className="flex gap-4 items-center bg-muted/20 p-4 rounded-2xl border border-border">
                 <div className="flex-1">
                   <select
-                    className="w-full p-2 rounded-lg border border-zinc-200 text-sm"
+                    className="w-full p-2 rounded-lg border border-border bg-background text-foreground text-sm"
                     value={item.inventoryItemId}
                     onChange={e => updateInvoiceItem(index, 'inventoryItemId', e.target.value)}
                   >
@@ -5117,7 +5526,7 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
                   <input
                     type="number"
                     placeholder="Qty"
-                    className="w-full p-2 rounded-lg border border-zinc-200 text-sm"
+                    className="w-full p-2 rounded-lg border border-border bg-background text-foreground text-sm"
                     value={item.quantity || ''}
                     onChange={e => updateInvoiceItem(index, 'quantity', Number(e.target.value))}
                   />
@@ -5126,49 +5535,49 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
                   <input
                     type="number"
                     placeholder="Cost/Unit"
-                    className="w-full p-2 rounded-lg border border-zinc-200 text-sm"
+                    className="w-full p-2 rounded-lg border border-border bg-background text-foreground text-sm"
                     value={item.costPerUnit || ''}
                     onChange={e => updateInvoiceItem(index, 'costPerUnit', Number(e.target.value))}
                   />
                 </div>
-                <div className="w-32 text-right font-bold text-zinc-700">
-                  {formatCurrency(item.quantity * item.costPerUnit)}
+                <div className="w-32 text-right font-bold text-foreground">
+                  {formatCurrencyDirect(item.quantity * item.costPerUnit)}
                 </div>
                 <button 
                   onClick={() => removeInvoiceItem(index)}
-                  className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                  className="p-2 text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
                 >
                   <Trash2 size={16} />
                 </button>
               </div>
             ))}
             {invoiceForm.items.length === 0 && (
-              <div className="text-center py-8 text-zinc-400 text-sm font-bold border-2 border-dashed border-zinc-200 rounded-2xl">
+              <div className="text-center py-8 text-muted-foreground text-sm font-bold border-2 border-dashed border-border rounded-2xl">
                 No items added to this invoice
               </div>
             )}
           </div>
 
-          <div className="border-t border-zinc-100 pt-6 flex justify-between items-end">
+          <div className="border-t border-border pt-6 flex justify-between items-end">
             <div className="w-64">
-              <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1 block">Amount Paid Now</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1 block">Amount Paid Now</label>
               <input
                 type="number"
-                className="w-full p-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none font-bold text-lg"
+                className="w-full p-3 rounded-xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none font-bold text-lg"
                 value={invoiceForm.amountPaid || ''}
                 onChange={e => setInvoiceForm({ ...invoiceForm, amountPaid: Number(e.target.value) })}
               />
             </div>
             <div className="text-right">
-              <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1">Total Invoice Amount</p>
-              <p className="text-3xl font-black text-zinc-900">{formatCurrency(invoiceForm.totalAmount)}</p>
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">Total Invoice Amount</p>
+              <p className="text-3xl font-black text-foreground">{formatCurrencyDirect(invoiceForm.totalAmount)}</p>
             </div>
           </div>
 
           <div className="flex justify-end gap-3 pt-4">
             <button
               onClick={() => setIsAddingInvoice(false)}
-              className="px-6 py-3 rounded-xl text-sm font-bold text-zinc-500 hover:bg-zinc-200 transition-colors"
+              className="px-6 py-3 rounded-xl text-sm font-bold text-muted-foreground hover:bg-muted transition-colors"
             >
               Cancel
             </button>
@@ -5183,29 +5592,42 @@ function SuppliersSection({ suppliers, inventory }: { suppliers: any[], inventor
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {suppliers.map(supplier => (
-          <div key={supplier.id} className="p-6 bg-white rounded-3xl border border-zinc-200 hover:shadow-xl hover:shadow-zinc-200/50 transition-all">
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-                <Truck size={24} />
-              </div>
-              <div>
-                <h3 className="font-bold text-zinc-900">{supplier.name}</h3>
-                <p className="text-xs text-zinc-500 font-medium">{supplier.phone}</p>
-              </div>
-            </div>
-            {supplier.email && <p className="text-sm text-zinc-600 mb-1">Email: {supplier.email}</p>}
-            {supplier.address && <p className="text-sm text-zinc-600">Address: {supplier.address}</p>}
-          </div>
-        ))}
-        {suppliers.length === 0 && (
-          <div className="col-span-full py-20 text-center bg-zinc-50 rounded-[2.5rem] border-2 border-dashed border-zinc-200">
-            <Truck size={48} className="text-zinc-300 mx-auto mb-4" />
-            <h3 className="text-lg font-bold text-zinc-900">No suppliers found</h3>
-            <p className="text-zinc-500">Add your first supplier to start tracking purchases</p>
-          </div>
-        )}
+      <div className="bg-card rounded-[2.5rem] border border-border overflow-hidden shadow-sm">
+        <table className="w-full text-left">
+          <thead>
+            <tr className="bg-muted/50 text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+              <th className="px-6 py-4">Date</th>
+              <th className="px-6 py-4">Supplier</th>
+              <th className="px-6 py-4">Invoice #</th>
+              <th className="px-6 py-4">Items</th>
+              <th className="px-6 py-4 text-right">Total</th>
+              <th className="px-6 py-4 text-right">Paid</th>
+              <th className="px-6 py-4 text-right">Balance</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {bills.filter(b => b.type === 'purchase').map(bill => (
+              <tr key={bill.id} className="hover:bg-muted/30 transition-all">
+                <td className="px-6 py-4 text-sm text-muted-foreground">
+                  {bill.timestamp?.toDate ? bill.timestamp.toDate().toLocaleDateString() : bill.date}
+                </td>
+                <td className="px-6 py-4 text-sm font-bold text-foreground">{bill.supplierName}</td>
+                <td className="px-6 py-4 text-sm font-mono text-muted-foreground">{bill.invoiceNumber}</td>
+                <td className="px-6 py-4 text-sm text-foreground/80">
+                  {bill.items?.length || 0} items
+                </td>
+                <td className="px-6 py-4 text-sm font-bold text-foreground text-right">{formatCurrency(bill.totalAmount || 0)}</td>
+                <td className="px-6 py-4 text-sm font-bold text-emerald-500 text-right">{formatCurrency(bill.amountPaid || 0)}</td>
+                <td className="px-6 py-4 text-sm font-bold text-destructive text-right">{formatCurrency((bill.totalAmount || 0) - (bill.amountPaid || 0))}</td>
+              </tr>
+            ))}
+            {bills.filter(b => b.type === 'purchase').length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-6 py-12 text-center text-muted-foreground italic text-sm">No purchase records found.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
