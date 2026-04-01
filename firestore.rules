@@ -119,20 +119,19 @@ service cloud.firestore {
       return data.userId is string &&
              data.items is list && data.items.size() > 0 &&
              data.total is number && data.total >= 0 &&
-             data.orderType in ['delivery', 'dine-in', 'pickup', 'take-out'] &&
+             data.orderType in ['delivery', 'dine-in', 'pickup', 'take-out', 'takeaway'] &&
              (data.orderType == 'dine-in' ? (data.tableId is string) : true) &&
-             data.status in ['pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized', 'cancelled', 'paid'] &&
+             data.status in ['pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized', 'cancelled', 'paid', 'awaiting-confirmation'] &&
              data.createdAt is timestamp;
     }
 
     function isValidJournalEntry(data) {
-      return data.type in ['sale', 'refund', 'expense', 'wastage', 'transfer'] &&
-             data.amount is number &&
-             data.description is string &&
+      return data.description is string &&
              data.timestamp is timestamp &&
-             (!('accountId' in data) || data.accountId is string) &&
-             (!('vendorId' in data) || data.vendorId is string) &&
-             (!('billId' in data) || data.billId is string);
+             (
+               (data.date is string && data.lines is list) ||
+               (data.type in ['sale', 'refund', 'expense', 'wastage', 'transfer'] && data.amount is number)
+             );
     }
 
     function isValidCustomer(data) {
@@ -177,10 +176,10 @@ service cloud.firestore {
       allow create: if (
         (isAuthenticated() && request.resource.data.userId == request.auth.uid) ||
         (request.resource.data.userId == 'guest') ||
-        (isAdmin() && request.resource.data.userId == 'walk-in')
+        (isAuthenticated() && request.resource.data.userId == 'walk-in')
       ) && isValidOrder(request.resource.data);
       allow update: if isAuthenticated();
-      allow delete: if isSuperAdmin();
+      allow delete: if isAdmin();
     }
 
     match /menu/{itemId} {
@@ -196,7 +195,7 @@ service cloud.firestore {
     match /journal/{entryId} {
       allow read: if isAdmin();
       allow create: if isAuthenticated() && isValidJournalEntry(request.resource.data);
-      allow update, delete: if isSuperAdmin();
+      allow update, delete: if isAdmin();
     }
 
     match /inventory/{itemId} {
@@ -258,7 +257,8 @@ service cloud.firestore {
 
     match /journal_entries/{entryId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow create: if isAuthenticated() && isValidJournalEntry(request.resource.data);
+      allow update, delete: if isAdmin();
     }
 
     match /ledgerGroups/{groupId} {

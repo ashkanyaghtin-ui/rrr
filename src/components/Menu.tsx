@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { MenuItem, Category } from '../types';
 import { Plus, Minus, ShoppingBag, Clock, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -14,32 +14,43 @@ interface MenuProps {
 
 export default function Menu({ items, categories, onAddToCart, cartCount, onOpenCart }: MenuProps) {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const isClickScrolling = useRef(false);
+  const scrollTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Scroll spy for categories
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const id = entry.target.id.replace('category-', '');
-            setActiveCategory(id);
+    const handleScroll = () => {
+      if (isClickScrolling.current) return;
+
+      const scrollPosition = window.scrollY + 200; // Offset for header
+      let currentCategory = null;
+
+      for (const cat of categories) {
+        const el = document.getElementById(`category-${cat.id}`);
+        if (el) {
+          const { top, bottom } = el.getBoundingClientRect();
+          const absoluteTop = top + window.scrollY;
+          const absoluteBottom = bottom + window.scrollY;
+
+          if (scrollPosition >= absoluteTop && scrollPosition < absoluteBottom) {
+            currentCategory = cat.id;
+            break;
           }
-        });
-      },
-      { rootMargin: '-20% 0px -80% 0px' }
-    );
+        }
+      }
 
-    categories.forEach((cat) => {
-      const el = document.getElementById(`category-${cat.id}`);
-      if (el) observer.observe(el);
-    });
+      if (currentCategory !== activeCategory) {
+        setActiveCategory(currentCategory);
+      }
+    };
 
-    return () => observer.disconnect();
-  }, [categories]);
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [categories, activeCategory]);
 
   // Scroll active category into view in the nav
   useEffect(() => {
-    if (activeCategory) {
+    if (activeCategory && !isClickScrolling.current) {
       const navButton = document.getElementById(`nav-cat-${activeCategory}`);
       if (navButton) {
         navButton.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
@@ -47,34 +58,14 @@ export default function Menu({ items, categories, onAddToCart, cartCount, onOpen
     }
   }, [activeCategory]);
 
-  useEffect(() => {
-    const handleScroll = () => {
-      const categoryElements = categories.map(cat => document.getElementById(`category-${cat.id}`));
-      let currentActive = null;
-      
-      for (const el of categoryElements) {
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          if (rect.top <= 200 && rect.bottom >= 200) {
-            currentActive = el.id.replace('category-', '');
-            break;
-          }
-        }
-      }
-      
-      if (currentActive && currentActive !== activeCategory) {
-        setActiveCategory(currentActive);
-      } else if (window.scrollY < 100 && activeCategory !== null) {
-        setActiveCategory(null);
-      }
-    };
-
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [categories, activeCategory]);
-
   const scrollToCategory = (id: string | null) => {
+    isClickScrolling.current = true;
     setActiveCategory(id);
+    
+    if (scrollTimeout.current) {
+      clearTimeout(scrollTimeout.current);
+    }
+
     if (id) {
       const el = document.getElementById(`category-${id}`);
       if (el) {
@@ -84,6 +75,11 @@ export default function Menu({ items, categories, onAddToCart, cartCount, onOpen
     } else {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
+
+    // Re-enable scroll spy after scrolling finishes
+    scrollTimeout.current = setTimeout(() => {
+      isClickScrolling.current = false;
+    }, 1000); // 1 second should be enough for smooth scroll to finish
   };
 
   const getImageUrl = (url: string) => {

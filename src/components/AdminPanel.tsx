@@ -3,10 +3,11 @@ import { db, OperationType, handleFirestoreError, secondaryAuth } from '../fireb
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp, where, getDocs, setDoc, limit, getDoc } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { MenuItem, Category, InventoryItem, Journal, Order, LedgerGroup } from '../types';
-import { Plus, Edit2, Trash2, Eye, EyeOff, Save, X, ShoppingBag, LayoutGrid, CheckCircle2, Clock, Ban, ShieldCheck, Monitor, Package, ChefHat, Truck, FileText, BarChart3, Boxes, History, Utensils, Printer, Move, Search, Filter, Calendar, Phone, MapPin, User, Hash, ChevronDown, ChevronUp, RotateCcw, Users, BookOpen, Building, Warehouse, Settings, Menu as MenuIcon, Upload, Download, FileSpreadsheet, ChevronRight, CreditCard, Wallet, ArrowRightLeft, Receipt, Percent, TrendingUp, UserPlus, Scale, Book, Grid, UserCheck, PieChart as PieChartIcon } from 'lucide-react';
+import { Plus, Edit2, Trash2, Eye, EyeOff, Save, X, ShoppingBag, LayoutGrid, CheckCircle2, Clock, Ban, ShieldCheck, Monitor, Package, ChefHat, Truck, FileText, BarChart3, Boxes, History, Utensils, Printer, Move, Search, Filter, Calendar, Phone, MapPin, User, Hash, ChevronDown, ChevronUp, RotateCcw, Users, BookOpen, Building, Warehouse, Settings, Menu as MenuIcon, Upload, Download, FileSpreadsheet, ChevronRight, CreditCard, Wallet, ArrowRightLeft, Receipt, Percent, TrendingUp, UserPlus, Scale, Book, Grid, UserCheck, PieChart as PieChartIcon, Split } from 'lucide-react';
 import TableDesigner from './TableDesigner';
 import AccountingReportsIFRS from './AccountingReportsIFRS';
 import CRM from './CRM';
+import Dashboard from './Dashboard';
 import RecipeManager from './RecipeManager';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency, formatCurrencyDirect } from '../utils/format';
@@ -23,97 +24,240 @@ interface AdminPanelProps {
   onOpenPOS?: () => void;
 }
 
-const Dashboard = () => {
-  const salesData = [
-    { name: 'Mon', sales: 4000 },
-    { name: 'Tue', sales: 3000 },
-    { name: 'Wed', sales: 5000 },
-    { name: 'Thu', sales: 2780 },
-    { name: 'Fri', sales: 1890 },
-    { name: 'Sat', sales: 2390 },
-    { name: 'Sun', sales: 3490 },
-  ];
-  const paymentData = [
-    { name: 'Cash', value: 400 },
-    { name: 'Credit Card', value: 300 },
-    { name: 'Debit Card', value: 300 },
-    { name: 'Cheque', value: 200 },
-    { name: 'Bank', value: 100 },
-    { name: 'Other', value: 50 },
-  ];
-  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
-          <p className="text-sm text-muted-foreground">Total Sales</p>
-          <h3 className="text-2xl font-bold text-foreground">306</h3>
-          <p className="text-xs text-green-500">2% increase from last week</p>
-        </div>
-        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
-          <p className="text-sm text-muted-foreground">Sales Revenue</p>
-          <h3 className="text-2xl font-bold text-foreground">AED 91,113</h3>
-          <p className="text-xs text-green-500">25% increase from last week</p>
-        </div>
-        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
-          <p className="text-sm text-muted-foreground">New Customers</p>
-          <h3 className="text-2xl font-bold text-foreground">20</h3>
-          <p className="text-xs text-red-500">13% decrease from last week</p>
-        </div>
-        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
-          <p className="text-sm text-muted-foreground">Average Rating</p>
-          <h3 className="text-2xl font-bold text-foreground">5/5</h3>
-          <p className="text-xs text-muted-foreground">0% increase from last week</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
-          <h3 className="text-lg font-bold text-foreground mb-4">This week's sales revenue</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={salesData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="sales" stroke="#8884d8" strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="bg-card p-6 rounded-3xl border border-border shadow-sm">
-          <h3 className="text-lg font-bold text-foreground mb-4">Payment methods used this week</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie data={paymentData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} fill="#8884d8" label>
-                {paymentData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 export default function AdminPanel({ items, categories, onClose, onLogout, onOpenPOS }: AdminPanelProps) {
   const { user, profile } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production' | 'purchases' | 'delivery'>('dashboard');
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  const toggleGroup = (groupId: string) => {
+    const newExpanded = new Set(expandedGroups);
+    if (newExpanded.has(groupId)) {
+      newExpanded.delete(groupId);
+    } else {
+      newExpanded.add(groupId);
+    }
+    setExpandedGroups(newExpanded);
+  };
+
+  const calculateAccountBalance = (accountId: string) => {
+    let balance = 0;
+    const account = ledgerGroups.find(g => g.id === accountId || g.code === accountId);
+    if (!account) return 0;
+
+    // Helper to get all child account IDs (including the account itself)
+    const getAllAccountIds = (groupId: string): string[] => {
+      const group = ledgerGroups.find(g => g.id === groupId);
+      if (!group) return [];
+      
+      let ids: string[] = [];
+      if (group.isAccount) {
+        ids.push(group.code || group.id);
+      }
+      
+      const children = ledgerGroups.filter(g => g.parentGroupId === groupId || g.parentGroupId === group.code);
+      children.forEach(c => {
+        ids = [...ids, ...getAllAccountIds(c.id)];
+      });
+      
+      return Array.from(new Set(ids));
+    };
+
+    const targetIds = getAllAccountIds(account.id);
+
+    journalEntries.forEach(entry => {
+      entry.lines.forEach((line: any) => {
+        if (targetIds.includes(line.accountId)) {
+          if (account.type === 'Asset' || account.type === 'Expense') {
+            balance += (line.debit || 0) - (line.credit || 0);
+          } else {
+            balance += (line.credit || 0) - (line.debit || 0);
+          }
+        }
+      });
+    });
+
+    return balance;
+  };
+
+  const renderTree = () => {
+    const types = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'] as const;
+    
+    return (
+      <div className="space-y-4">
+        {types.map(type => {
+          const isExpanded = expandedGroups.has(type);
+          const rootNodes = ledgerGroups.filter(g => 
+            g.type.toLowerCase() === type.toLowerCase() && 
+            (!g.parentGroupId || !ledgerGroups.some(pg => pg.id === g.parentGroupId))
+          );
+
+          const typeBalance = journalEntries.reduce((sum, entry) => {
+            return sum + entry.lines.reduce((lineSum: number, line: any) => {
+              const acc = ledgerGroups.find(g => g.code === line.accountId || g.id === line.accountId);
+              if (acc && acc.type === type) {
+                if (type === 'Asset' || type === 'Expense') {
+                  return lineSum + (line.debit - line.credit);
+                } else {
+                  return lineSum + (line.credit - line.debit);
+                }
+              }
+              return lineSum;
+            }, 0);
+          }, 0);
+          
+          return (
+            <div key={type} className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm transition-all hover:shadow-md">
+              <div 
+                onClick={() => toggleGroup(type)}
+                className={`flex items-center justify-between p-4 cursor-pointer transition-all ${
+                  isExpanded ? 'bg-zinc-900 text-white' : 'hover:bg-zinc-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-xl ${
+                    isExpanded ? 'bg-white/20 text-white' : 
+                    type === 'Asset' ? 'bg-emerald-50 text-emerald-600' :
+                    type === 'Liability' ? 'bg-red-50 text-red-600' :
+                    type === 'Equity' ? 'bg-blue-50 text-blue-600' :
+                    type === 'Revenue' ? 'bg-indigo-50 text-indigo-600' : 'bg-orange-50 text-orange-600'
+                  }`}>
+                    {type === 'Asset' ? <Building size={18} /> :
+                     type === 'Liability' ? <Scale size={18} /> :
+                     type === 'Equity' ? <Wallet size={18} /> :
+                     type === 'Revenue' ? <TrendingUp size={18} /> : <Receipt size={18} />}
+                  </div>
+                  <div>
+                    <span className="text-sm font-black uppercase tracking-tight">{type}s</span>
+                    <p className={`text-[10px] uppercase tracking-widest font-bold ${isExpanded ? 'text-white/50' : 'text-zinc-400'}`}>
+                      {rootNodes.length} Root {rootNodes.length === 1 ? 'Node' : 'Nodes'}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className={`text-sm font-black ${isExpanded ? 'text-white' : 'text-zinc-900'}`}>
+                    {formatCurrency(typeBalance)}
+                  </span>
+                  {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                </div>
+              </div>
+              
+              {isExpanded && (
+                <div className="p-4 bg-zinc-50/30 space-y-2">
+                  {rootNodes.length > 0 ? (
+                    rootNodes.map(node => renderNode(node, 0))
+                  ) : (
+                    <div className="text-center py-6">
+                      <p className="text-[10px] text-zinc-400 italic font-medium">No {type.toLowerCase()} accounts or groups defined yet.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderNode = (node: LedgerGroup, level: number) => {
+    const isExpanded = expandedGroups.has(node.id);
+    const children = ledgerGroups.filter(g => g.parentGroupId === node.id);
+    const hasChildren = children.length > 0;
+    const balance = calculateAccountBalance(node.id);
+
+    return (
+      <div key={node.id} className="space-y-1">
+        <div 
+          className={`group/node flex items-center justify-between p-2.5 rounded-xl border transition-all ${
+            node.isAccount 
+              ? 'bg-card border-border hover:border-primary/30 hover:bg-primary/5' 
+              : 'bg-card border-border hover:border-zinc-300'
+          }`}
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            {!node.isAccount && hasChildren ? (
+              <button 
+                onClick={(e) => { e.stopPropagation(); toggleGroup(node.id); }}
+                className={`p-1 rounded-md transition-all ${
+                  isExpanded ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'
+                }`}
+              >
+                {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </button>
+            ) : (
+              <div className="w-6 flex justify-center">
+                <div className={`w-1.5 h-1.5 rounded-full ${node.isAccount ? 'bg-primary animate-pulse' : 'bg-zinc-200'}`} />
+              </div>
+            )}
+            
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`p-1.5 rounded-lg ${
+                node.isAccount ? 'bg-zinc-100 text-zinc-500' : 'bg-primary/10 text-primary'
+              }`}>
+                {node.isAccount ? <Book size={12} /> : <BookOpen size={12} />}
+              </div>
+              <div className="flex flex-col min-w-0">
+                <span className={`text-xs truncate ${node.isAccount ? 'font-semibold text-zinc-700' : 'font-black text-zinc-900 uppercase tracking-tight'}`}>
+                  {node.code ? <span className="text-zinc-400 mr-1.5 font-mono">{node.code}</span> : null}
+                  {node.name}
+                </span>
+                {node.description && (
+                  <span className="text-[9px] text-zinc-400 truncate max-w-[200px]">{node.description}</span>
+                )}
+              </div>
+              {node.isAccount && (
+                <span className="px-1.5 py-0.5 rounded-md bg-zinc-100 text-zinc-400 text-[8px] font-black uppercase tracking-tighter">Account</span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`text-xs font-bold ${balance < 0 ? 'text-red-500' : 'text-zinc-900'}`}>
+              {formatCurrency(balance)}
+            </span>
+            <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-all shrink-0">
+              <button 
+                onClick={() => handleEditLedgerGroup(node)}
+                className="p-2 text-zinc-400 hover:text-primary hover:bg-primary/10 rounded-lg transition-all"
+                title="Edit Node"
+              >
+                <Edit2 size={12} />
+              </button>
+              <button 
+                onClick={() => deleteLedgerGroup(node.id)}
+                className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                title="Delete Node"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          </div>
+        </div>
+        
+        {!node.isAccount && isExpanded && hasChildren && (
+          <div className="ml-5 border-l-2 border-zinc-100 pl-4 space-y-1 mt-1">
+            {children.map(child => renderNode(child, level + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'finance' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production' | 'purchases' | 'delivery'>('dashboard');
   const [drivers, setDrivers] = useState<any[]>([]);
   const [isAddingDriver, setIsAddingDriver] = useState(false);
   const [newDriver, setNewDriver] = useState({ name: '', phone: '', vehicle: '', status: 'active' });
-  const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'journal' | 'vouchers' | 'bills' | 'banking' | 'taxes' | 'reports'>('dashboard');
+  const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'profit_loss' | 'balance_sheet' | 'cash_flow' | 'equity' | 'trial_balance' | 'general_ledger' | 'inventory_report' | 'sales_report' | 'pos_summary'>('dashboard');
+  const [isReportsDropdownOpen, setIsReportsDropdownOpen] = useState(false);
+  const [financeSubTab, setFinanceSubTab] = useState<'journal' | 'vouchers' | 'bills' | 'banking' | 'taxes'>('journal');
   const [accountingDateRange, setAccountingDateRange] = useState({ start: '', end: '' });
   const [accountingSearch, setAccountingSearch] = useState('');
   const [journalEntries, setJournalEntries] = useState<any[]>([]);
   const [ledgerGroups, setLedgerGroups] = useState<LedgerGroup[]>([]);
   const [expandedJournalId, setExpandedJournalId] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [newLedgerGroup, setNewLedgerGroup] = useState({ name: '', type: 'Asset' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense' });
+  const [newLedgerGroup, setNewLedgerGroup] = useState({ name: '', code: '', type: 'Asset' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense', parentGroupId: '', isAccount: false });
+  const [editingLedgerGroupId, setEditingLedgerGroupId] = useState<string | null>(null);
+  const [editLedgerGroupForm, setEditLedgerGroupForm] = useState({ name: '', code: '', type: 'Asset' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense', parentGroupId: '', isAccount: false });
   const [newCategory, setNewCategory] = useState({ name: '', order: 0 });
   const [isMenuOpen, setIsMenuOpen] = useState(true);
   const [isManageTreeOpen, setIsManageTreeOpen] = useState(false);
@@ -121,21 +265,67 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [reportView, setReportView] = useState<'cards' | 'spreadsheet'>('cards');
   const [spreadsheetTab, setSpreadsheetTab] = useState<'journal' | 'trial_balance' | 'profit_loss'>('journal');
 
+  // Settlement States
+  const [isSettlingBill, setIsSettlingBill] = useState(false);
+  const [settlingOrder, setSettlingOrder] = useState<Order | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'multi'>('cash');
+  const [amountReceived, setAmountReceived] = useState('');
+  const [multiPayment, setMultiPayment] = useState({ cash: '', card: '' });
+  const [isSplitBill, setIsSplitBill] = useState(false);
+  const [numberOfSplits, setNumberOfSplits] = useState(2);
+  const [isSplitByItem, setIsSplitByItem] = useState(false);
+  const [isSplitByAmount, setIsSplitByAmount] = useState(false);
+  const [selectedSplitItems, setSelectedSplitItems] = useState<any[]>([]);
+  const [splitAmount, setSplitAmount] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const handleAddLedgerGroup = async () => {
     if (!newLedgerGroup.name) return;
     try {
-      await addDoc(collection(db, 'ledgerGroups'), {
-        ...newLedgerGroup,
-        createdAt: serverTimestamp()
-      });
-      setNewLedgerGroup({ name: '', type: 'Asset' });
+      if (newLedgerGroup.code) {
+        await setDoc(doc(db, 'ledgerGroups', newLedgerGroup.code), {
+          ...newLedgerGroup,
+          createdAt: serverTimestamp()
+        });
+      } else {
+        await addDoc(collection(db, 'ledgerGroups'), {
+          ...newLedgerGroup,
+          createdAt: serverTimestamp()
+        });
+      }
+      setNewLedgerGroup({ name: '', code: '', type: 'Asset', parentGroupId: '', isAccount: false });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'ledgerGroups');
     }
   };
 
+  const handleEditLedgerGroup = (group: any) => {
+    setEditingLedgerGroupId(group.id);
+    setEditLedgerGroupForm({
+      name: group.name,
+      code: group.code || '',
+      type: group.type,
+      parentGroupId: group.parentGroupId || '',
+      isAccount: group.isAccount || false
+    });
+  };
+
+  const handleSaveLedgerGroup = async () => {
+    if (!editingLedgerGroupId || !editLedgerGroupForm.name) return;
+    try {
+      await updateDoc(doc(db, 'ledgerGroups', editingLedgerGroupId), {
+        ...editLedgerGroupForm,
+        updatedAt: serverTimestamp()
+      });
+      setEditingLedgerGroupId(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `ledgerGroups/${editingLedgerGroupId}`);
+    }
+  };
+
   const deleteLedgerGroup = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this ledger group?')) return;
+    // Removed window.confirm for iframe compatibility
+    // if (!window.confirm('Are you sure you want to delete this ledger group?')) return;
     try {
       await deleteDoc(doc(db, 'ledgerGroups', id));
     } catch (error) {
@@ -156,8 +346,92 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     }
   };
 
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
+
+  const handleSystemReset = async () => {
+    setIsResetting(true);
+    try {
+      console.log('Starting system reset...');
+      
+      // 1. Clear Orders
+      const ordersSnapshot = await getDocs(collection(db, 'orders'));
+      console.log(`Deleting ${ordersSnapshot.size} orders...`);
+      const orderDeletes = ordersSnapshot.docs.map(d => deleteDoc(doc(db, 'orders', d.id)));
+      
+      // 2. Clear Journal & Journal Entries
+      const journalSnapshot = await getDocs(collection(db, 'journal'));
+      console.log(`Deleting ${journalSnapshot.size} journal entries...`);
+      const journalDeletes = journalSnapshot.docs.map(d => deleteDoc(doc(db, 'journal', d.id)));
+      
+      const entriesSnapshot = await getDocs(collection(db, 'journal_entries'));
+      console.log(`Deleting ${entriesSnapshot.size} formal journal entries...`);
+      const entryDeletes = entriesSnapshot.docs.map(d => deleteDoc(doc(db, 'journal_entries', d.id)));
+      
+      // 3. Clear Bills (Purchases)
+      const billsSnapshot = await getDocs(collection(db, 'bills'));
+      console.log(`Deleting ${billsSnapshot.size} bills...`);
+      const billDeletes = billsSnapshot.docs.map(d => deleteDoc(doc(db, 'bills', d.id)));
+
+      // 4. Clear Wastage
+      const wastageSnapshot = await getDocs(collection(db, 'wastage'));
+      console.log(`Deleting ${wastageSnapshot.size} wastage records...`);
+      const wastageDeletes = wastageSnapshot.docs.map(d => deleteDoc(doc(db, 'wastage', d.id)));
+
+      // 5. Clear Production
+      const productionSnapshot = await getDocs(collection(db, 'production'));
+      console.log(`Deleting ${productionSnapshot.size} production records...`);
+      const productionDeletes = productionSnapshot.docs.map(d => deleteDoc(doc(db, 'production', d.id)));
+
+      // Execute all deletes
+      await Promise.all([
+        ...orderDeletes, 
+        ...journalDeletes, 
+        ...entryDeletes, 
+        ...billDeletes, 
+        ...wastageDeletes, 
+        ...productionDeletes
+      ]);
+
+      // 6. Reset Inventory Stock and Cost
+      const inventorySnapshot = await getDocs(collection(db, 'inventory'));
+      console.log(`Resetting ${inventorySnapshot.size} inventory items...`);
+      const inventoryUpdates = inventorySnapshot.docs.map(d => 
+        updateDoc(doc(db, 'inventory', d.id), {
+          stock: 0,
+          costPerUnit: 0,
+          lastUpdated: serverTimestamp()
+        })
+      );
+      await Promise.all(inventoryUpdates);
+
+      // 7. Reset Tables
+      const tablesSnapshot = await getDocs(collection(db, 'tables'));
+      console.log(`Resetting ${tablesSnapshot.size} tables...`);
+      const tableUpdates = tablesSnapshot.docs.map(d => 
+        updateDoc(doc(db, 'tables', d.id), {
+          status: 'available',
+          currentOrderId: null
+        })
+      );
+      await Promise.all(tableUpdates);
+
+      console.log('System reset complete.');
+      setResetSuccess(true);
+      setTimeout(() => setResetSuccess(false), 5000);
+      setIsResetConfirmOpen(false);
+    } catch (error) {
+      console.error('Reset failed:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'system-reset');
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   const deleteCategory = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this category? Items in this category will become uncategorized.')) return;
+    // Removed window.confirm for iframe compatibility
+    // if (!window.confirm('Are you sure you want to delete this category? Items in this category will become uncategorized.')) return;
     try {
       await deleteDoc(doc(db, 'categories', id));
     } catch (error) {
@@ -326,6 +600,94 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [isAddingTransfer, setIsAddingTransfer] = useState(false);
   const [transferForm, setTransferForm] = useState({ fromAccount: 'cash', toAccount: 'bank', amount: 0, reference: '', date: new Date().toISOString().split('T')[0] });
 
+  const initializeDefaultCOA = async () => {
+    try {
+      const DEFAULT_COA = [
+        // Assets
+        { code: '1000', name: 'Assets', type: 'Asset', isAccount: false },
+        { code: '1100', name: 'Current Assets', type: 'Asset', parentCode: '1000', isAccount: false },
+        { code: '1101', name: 'Cash on Hand', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1102', name: 'Bank Accounts', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1103', name: 'Accounts Receivable', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1104', name: 'Allowance for Doubtful Debts', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1105', name: 'Inventory', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1106', name: 'Prepaid Expenses', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1107', name: 'VAT Receivable', type: 'Asset', parentCode: '1100', isAccount: true },
+        { code: '1200', name: 'Non-Current Assets', type: 'Asset', parentCode: '1000', isAccount: false },
+        { code: '1201', name: 'Property, Plant & Equipment (PPE)', type: 'Asset', parentCode: '1200', isAccount: true },
+        { code: '1202', name: 'Accumulated Depreciation', type: 'Asset', parentCode: '1200', isAccount: true },
+        { code: '1203', name: 'Intangible Assets', type: 'Asset', parentCode: '1200', isAccount: true },
+        { code: '1204', name: 'Right-of-Use Assets (IFRS 16)', type: 'Asset', parentCode: '1200', isAccount: true },
+        { code: '1205', name: 'Long-term Investments', type: 'Asset', parentCode: '1200', isAccount: true },
+        // Liabilities
+        { code: '2000', name: 'Liabilities', type: 'Liability', isAccount: false },
+        { code: '2100', name: 'Current Liabilities', type: 'Liability', parentCode: '2000', isAccount: false },
+        { code: '2101', name: 'Accounts Payable', type: 'Liability', parentCode: '2100', isAccount: true },
+        { code: '2102', name: 'Accrued Expenses', type: 'Liability', parentCode: '2100', isAccount: true },
+        { code: '2103', name: 'Short-term Loans', type: 'Liability', parentCode: '2100', isAccount: true },
+        { code: '2104', name: 'VAT Payable', type: 'Liability', parentCode: '2100', isAccount: true },
+        { code: '2105', name: 'Unearned Revenue', type: 'Liability', parentCode: '2100', isAccount: true },
+        { code: '2200', name: 'Non-Current Liabilities', type: 'Liability', parentCode: '2000', isAccount: false },
+        { code: '2201', name: 'Long-term Loans', type: 'Liability', parentCode: '2200', isAccount: true },
+        { code: '2202', name: 'Lease Liabilities (IFRS 16)', type: 'Liability', parentCode: '2200', isAccount: true },
+        { code: '2203', name: 'Provisions (IAS 37)', type: 'Liability', parentCode: '2200', isAccount: true },
+        // Equity
+        { code: '3000', name: 'Equity', type: 'Equity', isAccount: false },
+        { code: '3101', name: 'Share Capital', type: 'Equity', parentCode: '3000', isAccount: true },
+        { code: '3102', name: 'Retained Earnings', type: 'Equity', parentCode: '3000', isAccount: true },
+        { code: '3103', name: 'Current Year Profit/Loss', type: 'Equity', parentCode: '3000', isAccount: true },
+        { code: '3104', name: 'Dividends', type: 'Equity', parentCode: '3000', isAccount: true },
+        // Revenue
+        { code: '4000', name: 'Revenue', type: 'Revenue', isAccount: false },
+        { code: '4101', name: 'Sales Revenue', type: 'Revenue', parentCode: '4000', isAccount: true },
+        { code: '4102', name: 'Service Revenue', type: 'Revenue', parentCode: '4000', isAccount: true },
+        { code: '4103', name: 'Other Income', type: 'Revenue', parentCode: '4000', isAccount: true },
+        { code: '4104', name: 'Discounts Given', type: 'Revenue', parentCode: '4000', isAccount: true },
+        // Cost of Sales
+        { code: '5000', name: 'Cost of Sales', type: 'Expense', isAccount: false },
+        { code: '5101', name: 'Cost of Goods Sold', type: 'Expense', parentCode: '5000', isAccount: true },
+        { code: '5102', name: 'Direct Labor', type: 'Expense', parentCode: '5000', isAccount: true },
+        { code: '5103', name: 'Manufacturing Costs', type: 'Expense', parentCode: '5000', isAccount: true },
+        { code: '5104', name: 'Wastage Expense', type: 'Expense', parentCode: '5000', isAccount: true },
+        // Operating Expenses
+        { code: '6000', name: 'Operating Expenses', type: 'Expense', isAccount: false },
+        { code: '6100', name: 'Administrative Expenses', type: 'Expense', parentCode: '6000', isAccount: false },
+        { code: '6101', name: 'Salaries', type: 'Expense', parentCode: '6100', isAccount: true },
+        { code: '6102', name: 'Office Rent', type: 'Expense', parentCode: '6100', isAccount: true },
+        { code: '6103', name: 'Utilities', type: 'Expense', parentCode: '6100', isAccount: true },
+        { code: '6104', name: 'Depreciation', type: 'Expense', parentCode: '6100', isAccount: true },
+        { code: '6199', name: 'Other Operating Expenses', type: 'Expense', parentCode: '6100', isAccount: true },
+        { code: '6200', name: 'Selling & Distribution', type: 'Expense', parentCode: '6000', isAccount: false },
+        { code: '6201', name: 'Marketing Expenses', type: 'Expense', parentCode: '6200', isAccount: true },
+        { code: '6202', name: 'Delivery Expenses', type: 'Expense', parentCode: '6200', isAccount: true },
+        { code: '6203', name: 'Commission', type: 'Expense', parentCode: '6200', isAccount: true },
+        // Finance & Other
+        { code: '8000', name: 'Finance & Other', type: 'Expense', isAccount: false },
+        { code: '8101', name: 'Interest Expense', type: 'Expense', parentCode: '8000', isAccount: true },
+        { code: '8102', name: 'Bank Charges', type: 'Expense', parentCode: '8000', isAccount: true },
+        { code: '8103', name: 'Foreign Exchange Gain/Loss', type: 'Expense', parentCode: '8000', isAccount: true },
+      ];
+
+      for (const item of DEFAULT_COA) {
+        const docRef = doc(db, 'ledgerGroups', item.code);
+        const docSnap = await getDoc(docRef);
+        if (!docSnap.exists()) {
+          await setDoc(docRef, {
+            name: item.name,
+            code: item.code,
+            type: item.type,
+            isAccount: item.isAccount,
+            parentGroupId: item.parentCode || '',
+            createdAt: serverTimestamp()
+          });
+        }
+      }
+      alert('Chart of Accounts synchronized successfully.');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'ledgerGroups');
+    }
+  };
+
   const handleAddTransfer = async () => {
     if (!transferForm.amount || transferForm.amount <= 0) return;
     try {
@@ -363,7 +725,14 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [isAddingJournalEntry, setIsAddingJournalEntry] = useState(false);
   
   const [voucherForm, setVoucherForm] = useState({ type: 'receipt', amount: 0, description: '', date: new Date().toISOString().split('T')[0], paymentMethod: 'cash' });
-  const [billForm, setBillForm] = useState({ vendorId: '', amount: 0, dueDate: new Date().toISOString().split('T')[0], description: '', status: 'unpaid' });
+  const [billForm, setBillForm] = useState({ 
+    vendorId: '', 
+    amount: 0, 
+    dueDate: new Date().toISOString().split('T')[0], 
+    description: '', 
+    status: 'unpaid',
+    items: [] as { inventoryItemId: string, name: string, quantity: number, price: number }[]
+  });
   const [chequeForm, setChequeForm] = useState({ chequeNumber: '', bank: '', amount: 0, date: new Date().toISOString().split('T')[0], status: 'pending', vendorId: '' });
   const [vendorForm, setVendorForm] = useState({ name: '', phone: '', email: '', address: '' });
   const [journalEntryForm, setJournalEntryForm] = useState({
@@ -507,21 +876,27 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   useEffect(() => {
     if (!user) return;
+    const unsubLedgerGroups = onSnapshot(collection(db, 'ledgerGroups'), (snapshot) => {
+      const groups = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as LedgerGroup));
+      setLedgerGroups(groups);
+      
+      // Auto-initialize if empty
+      if (snapshot.empty && isSuperAdmin) {
+        initializeDefaultCOA();
+      }
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'ledgerGroups'));
+    
+    return () => unsubLedgerGroups();
+  }, [user, isSuperAdmin]);
+
+  useEffect(() => {
+    if (!user) return;
     const q = query(collection(db, 'inventory'), orderBy('name'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setInventory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'inventory'));
     return () => unsubscribe();
   }, [user]);
-
-  useEffect(() => {
-    if (!user || activeTab !== 'accounting') return;
-    const q = query(collection(db, 'journal'), orderBy('timestamp', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setJournal(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Journal)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'journal'));
-    return () => unsubscribe();
-  }, [user, activeTab]);
 
   const [showAddTransaction, setShowAddTransaction] = useState(false);
   const [newTransaction, setNewTransaction] = useState({
@@ -550,16 +925,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         timestamp: serverTimestamp(),
         lines: [
           { 
-            accountId: newTransaction.type === 'sale' ? 'cash' : 'expense', 
-            accountName: newTransaction.type === 'sale' ? 'Cash' : 'Expense', 
-            debit: newTransaction.type === 'sale' ? amountInCents : amountInCents, 
+            accountId: newTransaction.type === 'sale' ? '1101' : '6199', 
+            accountName: newTransaction.type === 'sale' ? 'Cash on Hand' : 'Other Operating Expenses', 
+            debit: amountInCents, 
             credit: 0 
           },
           { 
-            accountId: newTransaction.type === 'sale' ? 'revenue' : 'cash', 
-            accountName: newTransaction.type === 'sale' ? 'Sales Revenue' : 'Cash', 
+            accountId: newTransaction.type === 'sale' ? '4101' : '1101', 
+            accountName: newTransaction.type === 'sale' ? 'Sales Revenue' : 'Cash on Hand', 
             debit: 0, 
-            credit: newTransaction.type === 'sale' ? amountInCents : amountInCents 
+            credit: amountInCents 
           }
         ]
       });
@@ -573,11 +948,43 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleAddVoucher = async () => {
     try {
-      await addDoc(collection(db, 'vouchers'), {
+      const voucherData = {
         ...voucherForm,
         amount: Math.round(voucherForm.amount * 100),
         createdAt: serverTimestamp()
+      };
+      
+      const voucherRef = await addDoc(collection(db, 'vouchers'), voucherData);
+
+      // Create Journal Entry for the Voucher
+      let debitAccount = '';
+      let debitName = '';
+      let creditAccount = '';
+      let creditName = '';
+
+      if (voucherForm.type === 'receipt') {
+        debitAccount = voucherForm.paymentMethod === 'cash' ? '1101' : '1102';
+        debitName = voucherForm.paymentMethod === 'cash' ? 'Cash on Hand' : 'Bank Accounts';
+        creditAccount = '1103';
+        creditName = 'Accounts Receivable';
+      } else {
+        debitAccount = '2101';
+        debitName = 'Accounts Payable';
+        creditAccount = voucherForm.paymentMethod === 'cash' ? '1101' : '1102';
+        creditName = voucherForm.paymentMethod === 'cash' ? 'Cash on Hand' : 'Bank Accounts';
+      }
+
+      await addDoc(collection(db, 'journal_entries'), {
+        date: voucherForm.date,
+        reference: `VCH-${voucherRef.id.slice(-6).toUpperCase()}`,
+        description: voucherForm.description,
+        timestamp: serverTimestamp(),
+        lines: [
+          { accountId: debitAccount, accountName: debitName, debit: voucherData.amount, credit: 0 },
+          { accountId: creditAccount, accountName: creditName, debit: 0, credit: voucherData.amount }
+        ]
       });
+
       setIsAddingVoucher(false);
       setVoucherForm({ type: 'receipt', amount: 0, description: '', date: new Date().toISOString().split('T')[0], paymentMethod: 'cash' });
     } catch (err) {
@@ -587,13 +994,62 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleAddBill = async () => {
     try {
-      await addDoc(collection(db, 'bills'), {
+      const billData = {
         ...billForm,
         amount: Math.round(billForm.amount * 100),
         createdAt: serverTimestamp()
+      };
+      
+      const billRef = await addDoc(collection(db, 'bills'), billData);
+
+      // Update Inventory Stock and Average Cost
+      for (const item of billForm.items) {
+        const invRef = doc(db, 'inventory', item.inventoryItemId);
+        const invDoc = await getDoc(invRef);
+        if (invDoc.exists()) {
+          const data = invDoc.data();
+          const currentStock = data.stock || 0;
+          const currentAvgCost = data.averageCost || data.costPerUnit || 0;
+          const newQty = item.quantity;
+          const newPrice = Math.round(item.price * 100);
+          
+          // Calculate new average cost: (OldValue + NewValue) / TotalQty
+          const totalQty = currentStock + newQty;
+          const totalValue = (currentStock * currentAvgCost) + (newQty * newPrice);
+          const newAvgCost = totalQty > 0 ? Math.round(totalValue / totalQty) : newPrice;
+
+          await updateDoc(invRef, {
+            stock: totalQty,
+            averageCost: newAvgCost,
+            costPerUnit: newAvgCost, // Keep for backward compatibility
+            lastUpdated: serverTimestamp()
+          });
+        }
+      }
+
+      // Create Journal Entry for the Bill
+      const journalLines = [
+        { accountId: '1105', accountName: 'Inventory Asset', debit: billData.amount, credit: 0 },
+        { accountId: '2101', accountName: 'Accounts Payable', debit: 0, credit: billData.amount }
+      ];
+
+      await addDoc(collection(db, 'journal_entries'), {
+        date: new Date().toISOString().split('T')[0],
+        reference: `BILL-${billRef.id.slice(-6).toUpperCase()}`,
+        description: `Purchase from ${vendors.find(v => v.id === billForm.vendorId)?.name || 'Vendor'}`,
+        timestamp: serverTimestamp(),
+        lines: journalLines
       });
+
       setIsAddingBill(false);
-      setBillForm({ vendorId: '', amount: 0, dueDate: new Date().toISOString().split('T')[0], description: '', status: 'unpaid' });
+      setBillForm({ 
+        vendorId: '', 
+        amount: 0, 
+        dueDate: new Date().toISOString().split('T')[0], 
+        description: '', 
+        status: 'unpaid',
+        items: []
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'bills');
     }
@@ -858,13 +1314,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     }
   };
 
-  const printKOT = (order: Order) => {
+  const printKOT = (order: Order, isReprint: boolean = false) => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
 
     const itemsHtml = order.items.map(item => `
-      <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-family: monospace;">
-        <span>${item.quantity}x ${item.name}</span>
+      <div style="margin-bottom: 8px; font-family: monospace;">
+        <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;">
+          <span>${item.quantity}x ${item.name}</span>
+        </div>
+        ${item.notes ? `<div style="font-size: 12px; margin-left: 20px; color: #555;">- ${item.notes}</div>` : ''}
       </div>
     `).join('');
 
@@ -877,11 +1336,15 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             .header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; }
             .footer { border-top: 1px dashed #000; padding-top: 10px; margin-top: 10px; text-align: center; font-size: 12px; }
             .item-row { display: flex; justify-content: space-between; margin: 5px 0; }
+            .reprint { font-size: 20px; font-weight: bold; text-align: center; margin-bottom: 10px; border: 3px solid #ff0000; color: #ff0000; padding: 10px; }
+            .notes { border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px; font-style: italic; }
           </style>
         </head>
         <body onload="window.print(); window.close();">
+          ${isReprint ? '<div class="reprint">*** REPRINT ***</div>' : ''}
           <div class="header">
             <h2 style="margin: 0;">KITCHEN ORDER</h2>
+            <h3 style="margin: 5px 0;">KOT #${order.kotNo || 'N/A'}</h3>
             <p style="margin: 5px 0;">Order: #${order.id.slice(-6).toUpperCase()}</p>
             <p style="margin: 5px 0;">Type: ${order.orderType?.toUpperCase() || 'DELIVERY'}</p>
             ${order.tableNumber ? `<p style="margin: 5px 0; font-size: 20px; font-weight: bold;">TABLE: ${order.tableNumber}</p>` : ''}
@@ -890,6 +1353,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           <div class="items">
             ${itemsHtml}
           </div>
+          ${order.notes ? `
+          <div class="notes">
+            <strong>Notes:</strong><br/>
+            ${order.notes}
+          </div>
+          ` : ''}
           <div class="footer">
             <p>*** END OF KOT ***</p>
           </div>
@@ -899,6 +1368,317 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
     printWindow.document.write(html);
     printWindow.document.close();
+  };
+
+  const getAmountToPay = () => {
+    if (!settlingOrder) return 0;
+    if (isSplitByItem) {
+      const subtotal = selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+      const orderSubtotal = settlingOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+      let discountAmount = 0;
+      
+      if (settlingOrder.discount && settlingOrder.discount > 0) {
+        if (settlingOrder.discountType === 'percentage') {
+          discountAmount = Math.round(subtotal * (settlingOrder.discount / 100));
+        } else {
+          const proportion = subtotal / orderSubtotal;
+          discountAmount = Math.round((settlingOrder.discount * 100) * proportion);
+        }
+      }
+      
+      return Math.max(0, subtotal - discountAmount);
+    } else if (isSplitByAmount) {
+      return parseFloat(splitAmount) * 100 || 0;
+    } else if (isSplitBill) {
+      return Math.round(settlingOrder.total / numberOfSplits);
+    }
+    return settlingOrder.total;
+  };
+
+  const settleBill = async () => {
+    if (!settlingOrder) return;
+    setIsSubmitting(true);
+    try {
+      let amountToPay = settlingOrder.total;
+      let itemsToPay = settlingOrder.items;
+
+      if (isSplitByItem) {
+        const subtotal = selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        const orderSubtotal = settlingOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        let discountAmount = 0;
+        
+        if (settlingOrder.discount && settlingOrder.discount > 0) {
+          if (settlingOrder.discountType === 'percentage') {
+            discountAmount = Math.round(subtotal * (settlingOrder.discount / 100));
+          } else {
+            const proportion = subtotal / orderSubtotal;
+            discountAmount = Math.round((settlingOrder.discount * 100) * proportion);
+          }
+        }
+        
+        amountToPay = Math.max(0, subtotal - discountAmount);
+        
+        itemsToPay = selectedSplitItems.map(si => ({
+          itemId: si.itemId,
+          name: si.name,
+          price: si.price,
+          quantity: si.quantity
+        }));
+      } else if (isSplitByAmount) {
+        amountToPay = parseFloat(splitAmount) * 100;
+        itemsToPay = [];
+      } else if (isSplitBill) {
+        amountToPay = Math.round(settlingOrder.total / numberOfSplits);
+        itemsToPay = [];
+      }
+
+      const amount = paymentMethod === 'multi' ? (parseFloat(multiPayment.cash) * 100 || 0) + (parseFloat(multiPayment.card) * 100 || 0) : parseFloat(amountReceived) * 100 || 0;
+      let change = 0;
+      let cashAmount = 0;
+      let cardAmount = 0;
+
+      if (paymentMethod === 'multi') {
+        const cashGiven = parseFloat(multiPayment.cash) * 100 || 0;
+        cardAmount = parseFloat(multiPayment.card) * 100 || 0;
+        change = Math.max(0, (cashGiven + cardAmount) - amountToPay);
+        cashAmount = cashGiven - change;
+      } else if (paymentMethod === 'cash') {
+        change = Math.max(0, amount - amountToPay);
+        cashAmount = amountToPay;
+      } else if (paymentMethod === 'card') {
+        cardAmount = amountToPay;
+      }
+
+      const currentPayments = settlingOrder.payments || [];
+      const newPayment = {
+        method: paymentMethod,
+        amount: amountToPay,
+        timestamp: new Date().toISOString(),
+        cashAmount: cashAmount,
+        cardAmount: cardAmount
+      };
+      const updatedPayments = [...currentPayments, newPayment];
+
+      // Calculate COGS
+      let totalCOGS = 0;
+      const itemsToProcess = isSplitByItem ? selectedSplitItems : settlingOrder.items;
+      const paymentRatio = isSplitByItem ? 1 : (amountToPay / settlingOrder.total);
+
+      for (const item of itemsToProcess) {
+        const menuItem = items.find(mi => mi.id === item.itemId);
+        if (menuItem?.recipe) {
+          for (const ingredient of menuItem.recipe) {
+            const invItem = inventory.find(inv => inv.id === ingredient.inventoryItemId);
+            if (invItem) {
+              const cost = invItem.averageCost || invItem.costPerUnit || 0;
+              totalCOGS += cost * (ingredient.quantity || 0) * (item.quantity || 0) * paymentRatio;
+            }
+          }
+        } else {
+          const invItem = inventory.find(inv => inv.name === item.name);
+          if (invItem) {
+            const cost = invItem.averageCost || invItem.costPerUnit || 0;
+            totalCOGS += cost * (item.quantity || 0) * paymentRatio;
+          }
+        }
+      }
+
+      const taxAmount = Math.round(amountToPay - (amountToPay / 1.05));
+      const netAmount = amountToPay - taxAmount;
+
+      const journalLines = [
+        ...(cashAmount > 0 ? [{ accountId: 'cash', accountName: 'Cash', debit: cashAmount, credit: 0 }] : []),
+        ...(cardAmount > 0 ? [{ accountId: 'bank', accountName: 'Bank', debit: cardAmount, credit: 0 }] : []),
+        { accountId: 'sales', accountName: 'Sales Revenue', debit: 0, credit: netAmount },
+        { accountId: 'tax_payable', accountName: 'VAT Payable', debit: 0, credit: taxAmount },
+        ...(totalCOGS > 0 ? [
+          { accountId: 'cogs', accountName: 'Cost of Goods Sold', debit: Math.round(totalCOGS), credit: 0 },
+          { accountId: 'inventory', accountName: 'Inventory Asset', debit: 0, credit: Math.round(totalCOGS) }
+        ] : [])
+      ];
+
+      if (isSplitByItem) {
+        const remainingItems = [...settlingOrder.items];
+        selectedSplitItems.forEach(splitItem => {
+          const idx = remainingItems.findIndex(i => i.itemId === splitItem.itemId);
+          if (idx !== -1) {
+            remainingItems[idx].quantity -= splitItem.quantity;
+            if (remainingItems[idx].quantity <= 0) {
+              remainingItems.splice(idx, 1);
+            }
+          }
+        });
+
+        const newTotal = remainingItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        
+        if (remainingItems.length === 0) {
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            status: 'finalized',
+            paymentMethod,
+            payments: updatedPayments,
+            amountReceived: amount,
+            changeGiven: change,
+            completedAt: serverTimestamp()
+          });
+          if (settlingOrder.tableId) {
+            const tableIds = settlingOrder.tableId.split(',');
+            for (const tId of tableIds) {
+              const trimmedId = tId.trim();
+              if (trimmedId) {
+                await updateDoc(doc(db, 'tables', trimmedId), { status: 'available' });
+              }
+            }
+          }
+        } else {
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            items: remainingItems,
+            total: newTotal,
+            payments: updatedPayments,
+            notes: (settlingOrder.notes || '') + `\n[Partial Payment: ${formatCurrency(amountToPay)}]`
+          });
+        }
+
+        await addDoc(collection(db, 'journal'), {
+          orderId: settlingOrder.id,
+          type: 'sale',
+          amount: amountToPay,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          items: itemsToPay
+        });
+
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: journalLines
+        });
+
+        await deductInventory({ ...settlingOrder, items: itemsToPay });
+
+        if (remainingItems.length === 0) {
+          setIsSettlingBill(false);
+          setSettlingOrder(null);
+        } else {
+          setSettlingOrder({ ...settlingOrder, items: remainingItems, total: newTotal });
+          setSelectedSplitItems([]);
+        }
+      } else if (isSplitByAmount || isSplitBill) {
+        const remainingTotal = settlingOrder.total - amountToPay;
+        if (remainingTotal <= 0) {
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            status: 'finalized',
+            paymentMethod,
+            payments: updatedPayments,
+            amountReceived: amount,
+            changeGiven: change,
+            total: 0,
+            completedAt: serverTimestamp()
+          });
+          if (settlingOrder.tableId) {
+            const tableIds = settlingOrder.tableId.split(',');
+            for (const tId of tableIds) {
+              await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+            }
+          }
+        } else {
+          await updateDoc(doc(db, 'orders', settlingOrder.id), {
+            total: remainingTotal,
+            payments: updatedPayments,
+            notes: (settlingOrder.notes || '') + `\n[Partial Payment: ${formatCurrency(amountToPay)}]`
+          });
+        }
+
+        await addDoc(collection(db, 'journal'), {
+          orderId: settlingOrder.id,
+          type: 'sale',
+          amount: amountToPay,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp()
+        });
+
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: journalLines
+        });
+
+        if (remainingTotal <= 0) {
+          setIsSettlingBill(false);
+          setSettlingOrder(null);
+        } else {
+          setSettlingOrder({ ...settlingOrder, total: remainingTotal });
+        }
+      } else {
+        await updateDoc(doc(db, 'orders', settlingOrder.id), {
+          status: 'finalized',
+          paymentMethod,
+          payments: updatedPayments,
+          amountReceived: amount,
+          changeGiven: change,
+          completedAt: serverTimestamp()
+        });
+        if (settlingOrder.tableId) {
+          const tableIds = settlingOrder.tableId.split(',');
+          for (const tId of tableIds) {
+            const trimmedId = tId.trim();
+            if (trimmedId) {
+              await updateDoc(doc(db, 'tables', trimmedId), { status: 'available' });
+            }
+          }
+        }
+        await deductInventory(settlingOrder);
+
+        await addDoc(collection(db, 'journal'), {
+          orderId: settlingOrder.id,
+          type: 'sale',
+          amount: settlingOrder.total,
+          description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          items: settlingOrder.items
+        });
+
+        await addDoc(collection(db, 'journal_entries'), {
+          date: new Date().toISOString().split('T')[0],
+          reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
+          description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          timestamp: serverTimestamp(),
+          lines: journalLines
+        });
+
+        setIsSettlingBill(false);
+        setSettlingOrder(null);
+      }
+
+      printBill({
+        ...settlingOrder,
+        items: itemsToPay.length > 0 ? itemsToPay : [{ name: 'Partial Payment', quantity: 1, price: amountToPay, itemId: 'partial' }],
+        total: amountToPay,
+        isPartial: true
+      } as any);
+
+      const isFullyPaid = isSplitByItem ? (settlingOrder.items.length === 0) : (settlingOrder.total - amountToPay <= 0);
+      
+      if (isFullyPaid) {
+        setIsSplitBill(false);
+        setIsSplitByItem(false);
+        setIsSplitByAmount(false);
+        setSelectedSplitItems([]);
+        setSplitAmount('');
+      } else {
+        setSelectedSplitItems([]);
+        setSplitAmount('');
+      }
+      
+      setAmountReceived('');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `orders/${settlingOrder?.id}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const printBill = (order: Order) => {
@@ -1026,6 +1806,14 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       // Deduct Inventory when order is finalized
       if (status === 'finalized' && previousStatus !== 'finalized') {
         await deductInventory(order);
+        
+        // Update table status if it was a dine-in order
+        if (order.tableId) {
+          const tableIds = order.tableId.split(',');
+          for (const tId of tableIds) {
+            await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+          }
+        }
         
         // Automated Accounting when order is completed
         await addDoc(collection(db, 'journal'), {
@@ -1188,7 +1976,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             { id: 'suppliers', name: 'Suppliers', icon: <Truck size={18} /> },
             { id: 'purchases', name: 'Purchases', icon: <Receipt size={18} /> },
             { id: 'delivery', name: 'Delivery', icon: <Truck size={18} /> },
-            { id: 'accounting', name: 'Accounting', icon: <BarChart3 size={18} /> },
+            { id: 'accounting', name: 'Reports', icon: <BarChart3 size={18} /> },
+            { id: 'finance', name: 'Accounting', icon: <Wallet size={18} /> },
             { id: 'wastage', name: 'Wastage', icon: <Trash2 size={18} /> },
             { id: 'tables', name: 'Tables', icon: <Move size={18} /> },
             { id: 'crm', name: 'CRM', icon: <Users size={18} /> },
@@ -1197,20 +1986,69 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             { id: 'warehouses', name: 'Warehouses', icon: <Warehouse size={18} /> },
             { id: 'settings', name: 'Settings', icon: <Settings size={18} /> },
           ].filter(m => canAccess(m.id)).map(module => (
-            <button
-              key={module.id}
-              onClick={() => setActiveTab(module.id as any)}
-              className={`w-full flex items-center justify-between px-6 py-3 transition-all hover:bg-muted group ${activeTab === module.id ? 'bg-primary/5 border-r-4 border-primary' : ''}`}
-            >
-              <div className="flex items-center gap-3">
-                <span className={activeTab === module.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}>
-                  {module.icon}
-                </span>
-                <div className="text-left">
-                  <p className={`text-sm font-bold ${activeTab === module.id ? 'text-primary' : 'text-foreground/80'}`}>{module.name}</p>
+            <div key={module.id}>
+              <button
+                onClick={() => {
+                  if (module.id === 'accounting') {
+                    setActiveTab('accounting');
+                    setAccountingSubTab('dashboard');
+                    setIsReportsDropdownOpen(!isReportsDropdownOpen);
+                  } else {
+                    setActiveTab(module.id as any);
+                  }
+                }}
+                className={`w-full flex items-center justify-between px-6 py-3 transition-all hover:bg-muted group ${activeTab === module.id ? 'bg-primary/5 border-r-4 border-primary' : ''}`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className={activeTab === module.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}>
+                    {module.icon}
+                  </span>
+                  <div className="text-left">
+                    <p className={`text-sm font-bold ${activeTab === module.id ? 'text-primary' : 'text-foreground/80'}`}>{module.name}</p>
+                  </div>
                 </div>
-              </div>
-            </button>
+                {module.id === 'accounting' && (
+                  <span className="text-muted-foreground">
+                    {isReportsDropdownOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </span>
+                )}
+              </button>
+              {module.id === 'accounting' && isReportsDropdownOpen && (
+                <div className="bg-muted/30 py-2">
+                  {[
+                    { id: 'dashboard', name: 'Dashboard' },
+                    { id: 'profit_loss', name: 'Profit & Loss' },
+                    { id: 'balance_sheet', name: 'Balance Sheet' },
+                    { id: 'cash_flow', name: 'Cash Flow' },
+                    { id: 'equity', name: 'Statement of Equity' },
+                    { id: 'trial_balance', name: 'Trial Balance' },
+                    { id: 'general_ledger', name: 'General Ledger' },
+                    { id: 'inventory_report', name: 'Inventory Report' },
+                    { id: 'sales_report', name: 'Sales Report' },
+                    { id: 'sales_by_category', name: 'Sales by Category' },
+                    { id: 'sales_by_item', name: 'Sales by Item' },
+                    { id: 'pos_summary', name: 'POS Summary' },
+                    { id: 'tax_report', name: 'Tax Report (VAT)' },
+                    { id: 'waiter_performance', name: 'Waiter Performance' },
+                  ].map(report => (
+                    <button
+                      key={report.id}
+                      onClick={() => {
+                        setActiveTab('accounting');
+                        setAccountingSubTab(report.id as any);
+                      }}
+                      className={`w-full text-left pl-14 pr-6 py-2 text-sm font-medium transition-colors ${
+                        activeTab === 'accounting' && accountingSubTab === report.id
+                          ? 'text-primary bg-primary/5'
+                          : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                      }`}
+                    >
+                      {report.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -1253,7 +2091,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
         {/* Mobile Menu Dropdown */}
         {isMenuOpen && (
-          <div className="md:hidden absolute top-[73px] left-0 right-0 bg-white border-b border-zinc-200 z-50 max-h-[60vh] overflow-y-auto shadow-xl">
+          <div className="md:hidden absolute top-[73px] left-0 right-0 bg-card border-b border-border z-50 max-h-[60vh] overflow-y-auto shadow-xl">
             {[
               { id: 'dashboard', name: 'Dashboard', icon: <LayoutGrid size={18} /> },
               { id: 'orders', name: 'Order Management', icon: <ShoppingBag size={18} /> },
@@ -1264,7 +2102,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               { id: 'inventory', name: 'Inventory', icon: <Boxes size={18} /> },
               { id: 'suppliers', name: 'Suppliers', icon: <Truck size={18} /> },
               { id: 'purchases', name: 'Purchases', icon: <Receipt size={18} /> },
-              { id: 'accounting', name: 'Accounting', icon: <BarChart3 size={18} /> },
+              { id: 'accounting', name: 'Reports', icon: <BarChart3 size={18} /> },
+              { id: 'finance', name: 'Accounting', icon: <Wallet size={18} /> },
               { id: 'wastage', name: 'Wastage', icon: <Trash2 size={18} /> },
               { id: 'tables', name: 'Tables', icon: <Move size={18} /> },
               { id: 'crm', name: 'CRM', icon: <Users size={18} /> },
@@ -1273,17 +2112,65 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               { id: 'warehouses', name: 'Warehouses', icon: <Warehouse size={18} /> },
               { id: 'settings', name: 'Settings', icon: <Settings size={18} /> },
             ].filter(m => canAccess(m.id)).map(module => (
-              <button
-                key={module.id}
-                onClick={() => {
-                  setActiveTab(module.id as any);
-                  setIsMenuOpen(false);
-                }}
-                className={`w-full flex items-center gap-3 px-6 py-4 border-b border-zinc-50 ${activeTab === module.id ? 'bg-primary/5 text-primary' : 'text-zinc-600'}`}
-              >
-                {module.icon}
-                <span className="font-bold text-sm">{module.name}</span>
-              </button>
+              <div key={module.id}>
+                <button
+                  onClick={() => {
+                    if (module.id === 'accounting') {
+                      setIsReportsDropdownOpen(!isReportsDropdownOpen);
+                    } else {
+                      setActiveTab(module.id as any);
+                      setIsMenuOpen(false);
+                    }
+                  }}
+                  className={`w-full flex items-center justify-between px-6 py-4 border-b border-zinc-50 ${activeTab === module.id ? 'bg-primary/5 text-primary' : 'text-zinc-600'}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {module.icon}
+                    <span className="font-bold text-sm">{module.name}</span>
+                  </div>
+                  {module.id === 'accounting' && (
+                    <span className="text-zinc-400">
+                      {isReportsDropdownOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    </span>
+                  )}
+                </button>
+                {module.id === 'accounting' && isReportsDropdownOpen && (
+                  <div className="bg-zinc-50 py-2 border-b border-zinc-100">
+                    {[
+                      { id: 'dashboard', name: 'Dashboard' },
+                      { id: 'profit_loss', name: 'Profit & Loss' },
+                      { id: 'balance_sheet', name: 'Balance Sheet' },
+                      { id: 'cash_flow', name: 'Cash Flow' },
+                      { id: 'equity', name: 'Statement of Equity' },
+                      { id: 'trial_balance', name: 'Trial Balance' },
+                      { id: 'general_ledger', name: 'General Ledger' },
+                      { id: 'inventory_report', name: 'Inventory Report' },
+                      { id: 'sales_report', name: 'Sales Report' },
+                      { id: 'sales_by_category', name: 'Sales by Category' },
+                      { id: 'sales_by_item', name: 'Sales by Item' },
+                      { id: 'pos_summary', name: 'POS Summary' },
+                      { id: 'tax_report', name: 'Tax Report (VAT)' },
+                      { id: 'waiter_performance', name: 'Waiter Performance' },
+                    ].map(report => (
+                      <button
+                        key={report.id}
+                        onClick={() => {
+                          setActiveTab('accounting');
+                          setAccountingSubTab(report.id as any);
+                          setIsMenuOpen(false);
+                        }}
+                        className={`w-full text-left pl-14 pr-6 py-3 text-sm font-medium transition-colors ${
+                          activeTab === 'accounting' && accountingSubTab === report.id
+                            ? 'text-primary bg-primary/5'
+                            : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {report.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -1380,7 +2267,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           ) : activeTab === 'suppliers' ? (
             <SuppliersSection suppliers={vendors} />
           ) : activeTab === 'purchases' ? (
-            <PurchasesSection suppliers={vendors} inventory={inventory} bills={bills} />
+            <PurchasesSection suppliers={vendors} inventory={inventory} bills={bills} ledgerGroups={ledgerGroups} />
           ) : activeTab === 'delivery' ? (
             <DeliverySection drivers={drivers} />
           ) : activeTab === 'settings' ? (
@@ -1616,6 +2503,99 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     </div>
                   </div>
                 </div>
+
+                {/* System Reset Section */}
+                <div className="p-8 bg-white border border-red-100 rounded-[2.5rem] shadow-sm md:col-span-2">
+                  <h3 className="font-bold text-red-600 mb-6 flex items-center gap-2">
+                    <RotateCcw size={18} />
+                    System Reset & Data Maintenance
+                  </h3>
+                  <div className="space-y-4">
+                    <p className="text-sm text-zinc-500 max-w-2xl">
+                      Use this tool to clear all transaction history and reset the system to a fresh state. 
+                      This will delete all <strong>Orders, Journal Entries, Purchases, and Wastage records</strong>. 
+                      It will also reset all <strong>Inventory Stock and Average Costs</strong> to zero.
+                    </p>
+                    
+                    {resetSuccess && (
+                      <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-3 text-emerald-600 animate-in fade-in slide-in-from-top-2">
+                        <CheckCircle2 size={20} />
+                        <p className="font-bold">System reset successfully! All data has been cleared.</p>
+                      </div>
+                    )}
+
+                    {isResetConfirmOpen ? (
+                      <div className="p-6 bg-red-50 border border-red-200 rounded-2xl space-y-4 animate-in fade-in zoom-in-95">
+                        <div className="flex items-center gap-3 text-red-600">
+                          <Trash2 size={20} />
+                          <p className="font-black uppercase tracking-tight">Confirm System Wipe</p>
+                        </div>
+                        <p className="text-sm text-red-700 font-medium">
+                          Are you absolutely sure? This action will permanently delete all transaction history. This cannot be undone.
+                        </p>
+                        <div className="flex gap-3">
+                          <button
+                            onClick={handleSystemReset}
+                            disabled={isResetting}
+                            className="px-6 py-2 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 transition-all disabled:opacity-50"
+                          >
+                            {isResetting ? 'Wiping Data...' : 'Yes, Wipe Everything'}
+                          </button>
+                          <button
+                            onClick={() => setIsResetConfirmOpen(false)}
+                            disabled={isResetting}
+                            className="px-6 py-2 bg-card text-muted-foreground border border-border rounded-xl text-sm font-bold hover:bg-muted transition-all"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="pt-4 flex flex-col sm:flex-row gap-4">
+                        <button
+                          onClick={() => setIsResetConfirmOpen(true)}
+                          className="flex items-center justify-center gap-2 px-6 py-3 bg-red-50 text-red-600 rounded-xl text-sm font-bold hover:bg-red-100 transition-all border border-red-200"
+                        >
+                          <Trash2 size={18} />
+                          Wipe All Transaction Data
+                        </button>
+                        
+                        <button
+                          onClick={async () => {
+                            // Simple inventory reset without full system wipe
+                            if (isResetting) return;
+                            setIsResetting(true);
+                            try {
+                              const inventorySnapshot = await getDocs(collection(db, 'inventory'));
+                              const inventoryUpdates = inventorySnapshot.docs.map(d => 
+                                updateDoc(doc(db, 'inventory', d.id), {
+                                  stock: 0,
+                                  costPerUnit: 0,
+                                  lastUpdated: serverTimestamp()
+                                })
+                              );
+                              await Promise.all(inventoryUpdates);
+                              setResetSuccess(true);
+                              setTimeout(() => setResetSuccess(false), 5000);
+                            } catch (err) {
+                              handleFirestoreError(err, OperationType.UPDATE, 'inventory-reset');
+                            } finally {
+                              setIsResetting(false);
+                            }
+                          }}
+                          className="flex items-center justify-center gap-2 px-6 py-3 bg-zinc-50 text-zinc-600 rounded-xl text-sm font-bold hover:bg-zinc-100 transition-all border border-zinc-200"
+                        >
+                          <RotateCcw size={18} />
+                          Reset Inventory Only
+                        </button>
+                      </div>
+                    )}
+                    
+                    <p className="text-[10px] text-red-400 font-bold uppercase tracking-widest">
+                      Warning: This action is permanent and cannot be reversed.
+                    </p>
+                  </div>
+                </div>
               </div>
               <div className="flex justify-end items-center gap-4">
                 {saveSuccess && <span className="text-emerald-600 font-bold animate-in fade-in">Settings saved successfully!</span>}
@@ -1643,7 +2623,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               {/* Filter Bar */}
               <div className="p-6 bg-muted/50 border-b border-border flex flex-col gap-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-zinc-900">Order Filters</h3>
+                  <h3 className="font-bold text-foreground">Order Filters</h3>
                   <div className="flex items-center gap-3">
                     <button 
                       onClick={() => exportToExcel(orders, 'Orders')}
@@ -1655,7 +2635,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       onClick={() => setOrderFilters({
                         store: 'all', orderNo: '', orderType: '', fromDate: '', toDate: '', salesFromDate: '', salesToDate: '', kotNo: '', status: '', payment: '', customer: '', phone: '', deliveryZone: '', deliveryArea: '', driver: '', table: '', onlineOnly: false, hideRevoked: false
                       })}
-                      className="flex items-center gap-2 bg-zinc-200 text-zinc-700 px-6 py-2 rounded-xl text-xs font-bold hover:bg-zinc-300 transition-all"
+                      className="flex items-center gap-2 bg-muted text-muted-foreground px-6 py-2 rounded-xl text-xs font-bold hover:bg-muted/80 transition-all"
                     >
                       <RotateCcw size={14} /> Clear
                     </button>
@@ -1913,6 +2893,13 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                 <Printer size={14} /> Print Bill
                               </button>
                               
+                              <button 
+                                onClick={() => printKOT(order, true)}
+                                className="w-full flex items-center justify-center gap-2 bg-muted text-muted-foreground px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-muted/80 transition-all"
+                              >
+                                <ChefHat size={14} /> Reprint KOT
+                              </button>
+                              
                               {order.status === 'pending' && (
                                 <button 
                                   onClick={() => updateOrderStatus(order.id, 'confirmed')}
@@ -1955,10 +2942,15 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               )}
                               {order.status === 'awaiting-bill' && (
                                 <button 
-                                  onClick={() => updateOrderStatus(order.id, 'finalized')}
-                                  className="w-full flex items-center justify-center gap-2 bg-emerald-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600 transition-all"
+                                  onClick={() => {
+                                    setSettlingOrder(order);
+                                    setIsSettlingBill(true);
+                                    setPaymentMethod('cash');
+                                    setAmountReceived(order.total);
+                                  }}
+                                  className="w-full flex items-center justify-center gap-2 bg-emerald-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
                                 >
-                                  Finalize
+                                  <CreditCard size={14} /> Settle Bill
                                 </button>
                               )}
                               {order.status !== 'finalized' && order.status !== 'cancelled' && (
@@ -2085,38 +3077,48 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                 <p className="text-[10px] font-bold text-muted-foreground uppercase">Journal Entries</p>
                                 
                                 <div className="bg-background rounded-2xl border border-border overflow-hidden">
-                                  {journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).length > 0 ? (
-                                    journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).map((entry, idx) => (
-                                      <div key={idx} className="border-b border-border last:border-0">
-                                        <button 
-                                          onClick={() => setExpandedJournalEntryId(expandedJournalEntryId === entry.id ? null : entry.id)}
-                                          className="w-full p-3 flex items-center justify-between hover:bg-muted/50 transition-colors text-left"
-                                        >
+                                  {journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).length > 0 || journal.filter(j => j.orderId === order.id).length > 0 ? (
+                                    <>
+                                      {journalEntries.filter(j => j.reference === `ORD-${order.id.slice(-6).toUpperCase()}`).map((entry, idx) => (
+                                        <div key={`je-${idx}`} className="border-b border-border last:border-0">
+                                          <button 
+                                            onClick={() => setExpandedJournalEntryId(expandedJournalEntryId === entry.id ? null : entry.id)}
+                                            className="w-full p-3 flex items-center justify-between hover:bg-muted/50 transition-colors text-left"
+                                          >
+                                            <p className="text-xs font-bold text-foreground">{entry.description}</p>
+                                            <div className="flex items-center gap-2">
+                                              <p className="text-[10px] text-muted-foreground">{entry.date}</p>
+                                              <span className="text-muted-foreground text-[10px]">{expandedJournalEntryId === entry.id ? '▼' : '▶'}</span>
+                                            </div>
+                                          </button>
+                                          
+                                          {expandedJournalEntryId === entry.id && (
+                                            <div className="p-3 bg-muted/20 space-y-1 border-t border-border">
+                                              {entry.lines.map((line: any, lIdx: number) => (
+                                                <div key={lIdx} className="flex items-center justify-between text-[10px]">
+                                                  <span className="text-muted-foreground">{line.accountName}</span>
+                                                  <div className="flex gap-4">
+                                                    <span className={line.debit > 0 ? 'text-emerald-500 font-bold' : 'text-muted-foreground'}>{formatCurrency(line.debit)}</span>
+                                                    <span className={line.credit > 0 ? 'text-blue-500 font-bold' : 'text-muted-foreground'}>{formatCurrency(line.credit)}</span>
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                      {journal.filter(j => j.orderId === order.id).map((entry, idx) => (
+                                        <div key={`j-${idx}`} className="border-b border-border last:border-0 p-3 flex items-center justify-between">
                                           <p className="text-xs font-bold text-foreground">{entry.description}</p>
                                           <div className="flex items-center gap-2">
-                                            <p className="text-[10px] text-muted-foreground">{entry.date}</p>
-                                            <span className="text-muted-foreground text-[10px]">{expandedJournalEntryId === entry.id ? '▼' : '▶'}</span>
+                                            <span className="text-[10px] font-bold text-emerald-500">+{formatCurrency(entry.amount)}</span>
                                           </div>
-                                        </button>
-                                        
-                                        {expandedJournalEntryId === entry.id && (
-                                          <div className="p-3 bg-muted/20 space-y-1 border-t border-border">
-                                            {entry.lines.map((line: any, lIdx: number) => (
-                                              <div key={lIdx} className="flex items-center justify-between text-[10px]">
-                                                <span className="text-muted-foreground">{line.accountName}</span>
-                                                <div className="flex gap-4">
-                                                  <span className={line.debit > 0 ? 'text-emerald-500 font-bold' : 'text-muted-foreground'}>{formatCurrency(line.debit)}</span>
-                                                  <span className={line.credit > 0 ? 'text-blue-500 font-bold' : 'text-muted-foreground'}>{formatCurrency(line.credit)}</span>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
-                                      </div>
-                                    ))
+                                        </div>
+                                      ))}
+                                    </>
                                   ) : (
                                     <div className="p-4 text-center">
-                                      <p className="text-[10px] text-muted-foreground italic">No formal journal entries found for this order.</p>
+                                      <p className="text-[10px] text-muted-foreground italic">No journal entries found for this order.</p>
                                     </div>
                                   )}
                                 </div>
@@ -2219,7 +3221,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     </div>
                     <div className="p-4 bg-white border-t border-zinc-100 grid grid-cols-2 gap-2">
                       <button 
-                        onClick={() => printKOT(order)}
+                        onClick={() => printKOT(order, true)}
                         className="col-span-2 flex items-center justify-center gap-2 bg-zinc-100 text-zinc-600 py-2 rounded-xl font-bold text-xs hover:bg-zinc-200 transition-all mb-1"
                       >
                         <Printer size={14} /> Print KOT
@@ -2545,7 +3547,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                           await addDoc(collection(db, 'journal'), {
                                             type: 'expense',
                                             amount: newAmount * purchasePrice, // Now in cents
-                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrencyDirect(purchasePrice)})${supplier ? ` from ${supplier.name}` : ''}`,
+                                            description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrency(purchasePrice)})${supplier ? ` from ${supplier.name}` : ''}`,
                                             timestamp: serverTimestamp(),
                                             vendorId: adjustingStock.supplierId
                                           });
@@ -2557,8 +3559,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                             description: `Inventory Purchase: ${item.name}${supplier ? ` from ${supplier.name}` : ''}`,
                                             timestamp: serverTimestamp(),
                                             lines: [
-                                              { accountId: 'inventory', accountName: 'Inventory Asset', debit: newAmount * purchasePrice, credit: 0 },
-                                              { accountId: 'cash', accountName: 'Cash', debit: 0, credit: newAmount * purchasePrice }
+                                              { accountId: '1105', accountName: 'Inventory', debit: newAmount * purchasePrice, credit: 0 },
+                                              { accountId: '1101', accountName: 'Cash on Hand', debit: 0, credit: newAmount * purchasePrice }
                                             ]
                                           });
                                         }
@@ -2601,57 +3603,14 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             <div className="space-y-8">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">Accounting & Financials</h2>
-                  <p className="text-sm text-zinc-500 font-medium">Manage your books, vouchers, and financial reports</p>
-                </div>
-                <div className="flex items-center gap-2 bg-zinc-100 p-1 rounded-2xl">
-                  {(['dashboard', 'journal', 'vouchers', 'bills', 'banking', 'taxes', 'reports'] as const).map((tab) => (
-                    <button
-                      key={tab}
-                      onClick={() => setAccountingSubTab(tab)}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${
-                        accountingSubTab === tab 
-                          ? 'bg-white text-primary shadow-sm' 
-                          : 'text-zinc-500 hover:text-zinc-900'
-                      }`}
-                    >
-                      {tab}
-                    </button>
-                  ))}
+                  <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">Reports & Analytics</h2>
+                  <p className="text-sm text-zinc-500 font-medium">View financial reports, cash flow, and POS summaries</p>
                 </div>
               </div>
 
               {accountingSubTab === 'dashboard' ? (
-                <div className="space-y-8">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-bold text-zinc-900">Financial Overview</h3>
-                    <div className="flex gap-2">
-                      <div className="flex items-center gap-2 bg-white border border-zinc-200 px-4 py-2 rounded-xl">
-                        <Search size={14} className="text-zinc-400" />
-                        <input 
-                          type="text" 
-                          placeholder="Search journal..." 
-                          className="bg-transparent border-none outline-none text-xs font-medium w-48"
-                          value={accountingSearch}
-                          onChange={e => setAccountingSearch(e.target.value)}
-                        />
-                      </div>
-                      <button 
-                        onClick={() => exportToExcel(filteredJournalEntries, 'Transaction_Journal')}
-                        className="flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-50 transition-all"
-                      >
-                        <Download size={14} /> Export Journal
-                      </button>
-                      <button 
-                        onClick={() => setShowAddTransaction(true)}
-                        className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
-                      >
-                        <Plus size={18} /> Record Transaction
-                      </button>
-                    </div>
-                  </div>
-
-              {showAddTransaction && (
+                <div className="space-y-6">
+                  {showAddTransaction && (
                 <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                   <div className="bg-white rounded-[2.5rem] w-full max-w-md p-8 shadow-2xl">
                     <div className="flex items-center justify-between mb-8">
@@ -2723,70 +3682,30 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
               </div>
 
-              <div className="bg-white rounded-[2.5rem] border border-zinc-100 overflow-hidden">
-                <div className="p-6 border-b bg-zinc-50/50 flex items-center justify-between">
+              <div className="bg-card rounded-[2.5rem] border border-border overflow-hidden mb-8">
+                <div className="p-6 border-b bg-zinc-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <h3 className="font-bold text-zinc-900 flex items-center gap-2">
                     <BookOpen size={18} className="text-zinc-400" />
-                    Account Tree (Ledger Groups)
+                    Chart of Accounts
                   </h3>
-                  <button 
-                    onClick={() => setIsManageTreeOpen(true)}
-                    className="text-xs font-bold text-primary hover:underline"
-                  >
-                    Manage Tree
-                  </button>
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={initializeDefaultCOA}
+                      className="text-xs font-bold text-primary hover:text-primary/80 transition-colors flex items-center gap-1"
+                    >
+                      <Plus size={14} />
+                      Sync Default COA
+                    </button>
+                    <button 
+                      onClick={() => setIsManageTreeOpen(true)}
+                      className="text-xs font-bold text-primary hover:underline"
+                    >
+                      Manage Accounts
+                    </button>
+                  </div>
                 </div>
-                <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {[
-                    { 
-                      name: 'Assets', 
-                      balance: filteredJournalEntries.reduce((acc, entry) => {
-                        const assetLines = entry.lines.filter((l: any) => {
-                          const lg = ledgerGroups.find(g => g.id === l.accountId);
-                          return lg?.type === 'Asset' || l.accountName.toLowerCase().includes('cash') || l.accountName.toLowerCase().includes('bank') || l.accountName.toLowerCase().includes('inventory');
-                        });
-                        return acc + assetLines.reduce((sum: number, l: any) => sum + l.debit - l.credit, 0);
-                      }, 0), 
-                      color: 'emerald' 
-                    },
-                    { 
-                      name: 'Liabilities', 
-                      balance: filteredJournalEntries.reduce((acc, entry) => {
-                        const liabilityLines = entry.lines.filter((l: any) => {
-                          const lg = ledgerGroups.find(g => g.id === l.accountId);
-                          return lg?.type === 'Liability' || l.accountName.toLowerCase().includes('payable') || l.accountName.toLowerCase().includes('loan');
-                        });
-                        return acc + liabilityLines.reduce((sum: number, l: any) => sum + l.credit - l.debit, 0);
-                      }, 0), 
-                      color: 'red' 
-                    },
-                    { 
-                      name: 'Equity', 
-                      balance: filteredJournalEntries.reduce((acc, entry) => {
-                        const equityLines = entry.lines.filter((l: any) => {
-                          const lg = ledgerGroups.find(g => g.id === l.accountId);
-                          return lg?.type === 'Equity' || l.accountName.toLowerCase().includes('equity') || l.accountName.toLowerCase().includes('capital');
-                        });
-                        return acc + equityLines.reduce((sum: number, l: any) => sum + l.credit - l.debit, 0);
-                      }, 0), 
-                      color: 'blue' 
-                    },
-                    { 
-                      name: 'Revenue', 
-                      balance: totalRevenue, 
-                      color: 'indigo' 
-                    },
-                    { 
-                      name: 'Expenses', 
-                      balance: totalExpenses, 
-                      color: 'orange' 
-                    }
-                  ].map(group => (
-                    <div key={group.name} className={`p-4 rounded-2xl border border-${group.color}-100 bg-${group.color}-50/30`}>
-                      <p className={`text-[10px] font-bold text-${group.color}-600 uppercase tracking-widest mb-1`}>{group.name}</p>
-                      <p className="text-lg font-black text-zinc-900">{formatCurrency(group.balance)}</p>
-                    </div>
-                  ))}
+                <div className="p-6">
+                  {renderTree()}
                 </div>
               </div>
 
@@ -2927,17 +3846,46 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
               </div>
             </div>
-          ) : accountingSubTab === 'reports' ? (
+          ) : (
             <AccountingReportsIFRS 
+              reportType={accountingSubTab as any}
               journalEntries={journalEntries}
               journal={journal}
               orders={orders}
               inventory={inventory}
               items={items}
+              categories={categories}
+              ledgerGroups={ledgerGroups}
               formatCurrency={formatCurrency}
               exportToExcel={exportToExcel}
             />
-          ) : accountingSubTab === 'journal' ? (
+          )}
+        </div>
+      ) : activeTab === 'finance' ? (
+        <div className="space-y-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-black text-zinc-900 uppercase tracking-tight">Finance & Accounting</h2>
+              <p className="text-sm text-zinc-500 font-medium">Manage your journal entries, vouchers, bills, and taxes</p>
+            </div>
+            <div className="flex items-center gap-2 bg-zinc-100 p-1 rounded-2xl overflow-x-auto max-w-full no-scrollbar">
+              {(['journal', 'vouchers', 'bills', 'banking', 'taxes'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setFinanceSubTab(tab)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${
+                    financeSubTab === tab 
+                      ? 'bg-white text-primary shadow-sm' 
+                      : 'text-zinc-500 hover:text-zinc-900'
+                  }`}
+                >
+                  {tab.replace('_', ' ')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {financeSubTab === 'journal' ? (
             <div className="space-y-6">
               {isAddingJournalEntry && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3114,38 +4062,57 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
               </div>
 
-              <div className="bg-white rounded-[2.5rem] border border-zinc-100 overflow-hidden">
+              <div className="bg-white border border-zinc-300 shadow-sm overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+                  <table className="w-full text-left border-collapse">
                     <thead>
-                      <tr className="bg-zinc-50 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
-                        <th className="px-6 py-4">Date</th>
-                        <th className="px-6 py-4">Reference</th>
-                        <th className="px-6 py-4">Description</th>
-                        <th className="px-6 py-4 text-right">Total Debit</th>
-                        <th className="px-6 py-4 text-right">Total Credit</th>
+                      <tr className="bg-zinc-100 text-xs font-bold text-zinc-700 uppercase tracking-wider border-b border-zinc-300">
+                        <th className="px-4 py-3 border-r border-zinc-200 w-32">Date</th>
+                        <th className="px-4 py-3 border-r border-zinc-200">Account & Description</th>
+                        <th className="px-4 py-3 border-r border-zinc-200 w-48">Reference</th>
+                        <th className="px-4 py-3 border-r border-zinc-200 text-right w-32">Debit</th>
+                        <th className="px-4 py-3 text-right w-32">Credit</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-zinc-100">
-                      {journalEntries.map(entry => {
-                        const totalDebit = entry.lines.reduce((sum: number, line: any) => sum + line.debit, 0);
-                        const totalCredit = entry.lines.reduce((sum: number, line: any) => sum + line.credit, 0);
-                        return (
-                          <tr key={entry.id} className="hover:bg-zinc-50/50 transition-all">
-                            <td className="px-6 py-4 text-sm text-zinc-500">{entry.date}</td>
-                            <td className="px-6 py-4 text-sm font-bold text-zinc-900">{entry.reference}</td>
-                            <td className="px-6 py-4 text-sm text-zinc-500">{entry.description}</td>
-                            <td className="px-6 py-4 text-sm font-black text-right text-emerald-600">{formatCurrency(totalDebit)}</td>
-                            <td className="px-6 py-4 text-sm font-black text-right text-blue-600">{formatCurrency(totalCredit)}</td>
-                          </tr>
-                        );
-                      })}
+                    <tbody className="divide-y divide-zinc-200">
+                      {journalEntries.map(entry => (
+                        <React.Fragment key={entry.id}>
+                          {entry.lines.map((line: any, idx: number) => (
+                            <tr key={`${entry.id}-${idx}`} className="hover:bg-zinc-50 transition-colors">
+                              {idx === 0 ? (
+                                <td className="px-4 py-3 text-sm text-zinc-900 border-r border-zinc-200 align-top" rowSpan={entry.lines.length}>
+                                  <div className="font-medium">{entry.date}</div>
+                                </td>
+                              ) : null}
+                              <td className="px-4 py-3 text-sm border-r border-zinc-200">
+                                <div className={line.credit > 0 ? "pl-8 text-zinc-600" : "font-medium text-zinc-900"}>
+                                  {line.accountName}
+                                </div>
+                                {idx === entry.lines.length - 1 && entry.description && (
+                                  <div className="text-xs text-zinc-500 italic mt-2">({entry.description})</div>
+                                )}
+                              </td>
+                              {idx === 0 ? (
+                                <td className="px-4 py-3 text-sm text-zinc-600 border-r border-zinc-200 align-top" rowSpan={entry.lines.length}>
+                                  {entry.reference}
+                                </td>
+                              ) : null}
+                              <td className="px-4 py-3 text-sm font-medium text-right border-r border-zinc-200 text-zinc-900">
+                                {line.debit > 0 ? formatCurrency(line.debit) : ''}
+                              </td>
+                              <td className="px-4 py-3 text-sm font-medium text-right text-zinc-900">
+                                {line.credit > 0 ? formatCurrency(line.credit) : ''}
+                              </td>
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      ))}
                     </tbody>
                   </table>
                 </div>
               </div>
             </div>
-          ) : accountingSubTab === 'vouchers' ? (
+          ) : financeSubTab === 'vouchers' ? (
             <div className="space-y-6">
               {isAddingVoucher && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3267,7 +4234,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </table>
               </div>
             </div>
-          ) : accountingSubTab === 'bills' ? (
+          ) : financeSubTab === 'bills' ? (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {isAddingBill && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3292,9 +4259,86 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                           ))}
                         </select>
                       </div>
+
+                      {/* Bill Items */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Items / Purchases</label>
+                        <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                          {billForm.items.map((item, idx) => (
+                            <div key={idx} className="flex items-center gap-2 bg-zinc-50 p-2 rounded-xl border border-zinc-100">
+                              <span className="text-xs font-bold flex-1 truncate">{item.name}</span>
+                              <span className="text-[10px] text-zinc-500">{item.quantity} x {formatCurrency(item.price * 100)}</span>
+                              <button 
+                                onClick={() => {
+                                  const newItems = [...billForm.items];
+                                  newItems.splice(idx, 1);
+                                  const newTotal = newItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+                                  setBillForm({...billForm, items: newItems, amount: newTotal});
+                                }}
+                                className="text-red-500 p-1 hover:bg-red-50 rounded-lg"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-12 gap-2">
+                          <select 
+                            className="col-span-5 p-2 bg-zinc-50 border border-zinc-100 rounded-xl text-xs outline-none"
+                            onChange={(e) => {
+                              const inv = inventory.find(i => i.id === e.target.value);
+                              if (inv) {
+                                const newItem = { inventoryItemId: inv.id, name: inv.name, quantity: 1, price: (inv.averageCost || inv.costPerUnit || 0) / 100 };
+                                const newItems = [...billForm.items, newItem];
+                                const newTotal = newItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+                                setBillForm({...billForm, items: newItems, amount: newTotal});
+                                e.target.value = '';
+                              }
+                            }}
+                          >
+                            <option value="">Add Item...</option>
+                            {inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                          </select>
+                          <input 
+                            type="number" 
+                            placeholder="Qty"
+                            className="col-span-3 p-2 bg-zinc-50 border border-zinc-100 rounded-xl text-xs outline-none"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const qty = parseFloat((e.target as HTMLInputElement).value);
+                                if (billForm.items.length > 0 && !isNaN(qty)) {
+                                  const newItems = [...billForm.items];
+                                  newItems[newItems.length - 1].quantity = qty;
+                                  const newTotal = newItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+                                  setBillForm({...billForm, items: newItems, amount: newTotal});
+                                  (e.target as HTMLInputElement).value = '';
+                                }
+                              }
+                            }}
+                          />
+                          <input 
+                            type="number" 
+                            placeholder="Price"
+                            className="col-span-4 p-2 bg-zinc-50 border border-zinc-100 rounded-xl text-xs outline-none"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const price = parseFloat((e.target as HTMLInputElement).value);
+                                if (billForm.items.length > 0 && !isNaN(price)) {
+                                  const newItems = [...billForm.items];
+                                  newItems[newItems.length - 1].price = price;
+                                  const newTotal = newItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+                                  setBillForm({...billForm, items: newItems, amount: newTotal});
+                                  (e.target as HTMLInputElement).value = '';
+                                }
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Amount</label>
+                          <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Total Amount</label>
                           <input 
                             type="number" 
                             className="w-full p-4 bg-zinc-50 border border-zinc-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
@@ -3484,7 +4528,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
               </div>
             </div>
-          ) : accountingSubTab === 'banking' ? (
+          ) : financeSubTab === 'banking' ? (
             <div className="space-y-8">
               {isAddingCheque && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3716,7 +4760,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
               </div>
             </div>
-          ) : accountingSubTab === 'taxes' ? (
+          ) : financeSubTab === 'taxes' ? (
             <div className="space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="p-8 bg-zinc-900 rounded-[2.5rem] text-white">
@@ -3851,8 +4895,9 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </div>
               )}
 
-              <div className="grid grid-cols-1 gap-4">
-                {items.map(item => (
+              {items.length > 0 ? (
+                <div className="grid grid-cols-1 gap-4">
+                  {items.map(item => (
                   <div key={item.id} className="flex items-center gap-6 p-5 bg-white border border-zinc-100 rounded-3xl hover:shadow-xl hover:shadow-zinc-200/50 transition-all group">
                     <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 bg-zinc-100 border border-zinc-100">
                       {item.image ? (
@@ -3977,9 +5022,9 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   </div>
                 ))}
               </div>
-            </div>
-          ) : null}
-        </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {managingRecipeId && (
@@ -4090,16 +5135,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
       {/* Manage Tree Modal */}
       {isManageTreeOpen && (
-        <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-2xl shadow-2xl overflow-hidden border border-zinc-100">
-            <div className="p-8 border-b flex items-center justify-between bg-zinc-50/50">
-              <div className="flex items-center gap-4">
-                <div className="p-3 bg-primary/10 rounded-2xl text-primary">
-                  <BarChart3 size={24} />
+        <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-[1.5rem] sm:rounded-[2.5rem] w-full max-w-2xl shadow-2xl overflow-hidden border border-zinc-100 flex flex-col max-h-[90vh]">
+            <div className="p-4 sm:p-6 lg:p-8 border-b flex items-center justify-between bg-zinc-50/50 shrink-0">
+              <div className="flex items-center gap-3 sm:gap-4">
+                <div className="p-2 sm:p-3 bg-primary/10 rounded-xl sm:rounded-2xl text-primary">
+                  <BarChart3 size={20} className="sm:w-6 sm:h-6" />
                 </div>
                 <div>
-                  <h3 className="text-xl font-bold text-zinc-900">Manage Account Tree</h3>
-                  <p className="text-sm text-zinc-500">Define your ledger groups and structure</p>
+                  <h3 className="text-lg sm:text-xl font-bold text-zinc-900">Manage Account Tree</h3>
+                  <p className="text-xs sm:text-sm text-zinc-500 hidden sm:block">Define your ledger groups and structure</p>
                 </div>
               </div>
               <button 
@@ -4110,22 +5155,40 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               </button>
             </div>
             
-            <div className="p-8 space-y-8">
-              {/* Add New Group */}
-              <div className="bg-zinc-50 p-6 rounded-3xl border border-zinc-100 space-y-4">
-                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Add New Ledger Group</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 overflow-y-auto custom-scrollbar">
+              {/* Add/Edit Group */}
+              <div className="bg-zinc-50 p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-zinc-100 space-y-3 sm:space-y-4 shrink-0">
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                  {editingLedgerGroupId ? 'Edit Ledger Group' : 'Add New Ledger Group'}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                  <input 
+                    type="text" 
+                    placeholder="Code (e.g. 1100)" 
+                    className="p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm"
+                    value={editingLedgerGroupId ? editLedgerGroupForm.code : newLedgerGroup.code}
+                    onChange={e => editingLedgerGroupId 
+                      ? setEditLedgerGroupForm({...editLedgerGroupForm, code: e.target.value})
+                      : setNewLedgerGroup({...newLedgerGroup, code: e.target.value})
+                    }
+                  />
                   <input 
                     type="text" 
                     placeholder="Group Name (e.g. Cash at Bank)" 
-                    className="p-4 rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm"
-                    value={newLedgerGroup.name}
-                    onChange={e => setNewLedgerGroup({...newLedgerGroup, name: e.target.value})}
+                    className="p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm"
+                    value={editingLedgerGroupId ? editLedgerGroupForm.name : newLedgerGroup.name}
+                    onChange={e => editingLedgerGroupId 
+                      ? setEditLedgerGroupForm({...editLedgerGroupForm, name: e.target.value})
+                      : setNewLedgerGroup({...newLedgerGroup, name: e.target.value})
+                    }
                   />
                   <select 
-                    className="p-4 rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm"
-                    value={newLedgerGroup.type}
-                    onChange={e => setNewLedgerGroup({...newLedgerGroup, type: e.target.value as any})}
+                    className="p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm bg-white"
+                    value={editingLedgerGroupId ? editLedgerGroupForm.type : newLedgerGroup.type}
+                    onChange={e => editingLedgerGroupId
+                      ? setEditLedgerGroupForm({...editLedgerGroupForm, type: e.target.value as any})
+                      : setNewLedgerGroup({...newLedgerGroup, type: e.target.value as any})
+                    }
                   >
                     <option value="Asset">Asset</option>
                     <option value="Liability">Liability</option>
@@ -4133,42 +5196,67 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     <option value="Revenue">Revenue</option>
                     <option value="Expense">Expense</option>
                   </select>
+                  <select 
+                    className="p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-zinc-200 focus:ring-2 focus:ring-primary outline-none transition-all text-sm bg-white"
+                    value={editingLedgerGroupId ? editLedgerGroupForm.parentGroupId : newLedgerGroup.parentGroupId}
+                    onChange={e => editingLedgerGroupId
+                      ? setEditLedgerGroupForm({...editLedgerGroupForm, parentGroupId: e.target.value})
+                      : setNewLedgerGroup({...newLedgerGroup, parentGroupId: e.target.value})
+                    }
+                  >
+                    <option value="">No Parent (Root)</option>
+                    {ledgerGroups.filter(g => g.id !== editingLedgerGroupId).map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                  <div className="flex items-center gap-2 px-2 sm:px-4 col-span-1 sm:col-span-2">
+                    <input 
+                      type="checkbox"
+                      id="isAccount"
+                      className="w-4 h-4 accent-primary"
+                      checked={editingLedgerGroupId ? editLedgerGroupForm.isAccount : newLedgerGroup.isAccount}
+                      onChange={e => editingLedgerGroupId
+                        ? setEditLedgerGroupForm({...editLedgerGroupForm, isAccount: e.target.checked})
+                        : setNewLedgerGroup({...newLedgerGroup, isAccount: e.target.checked})
+                      }
+                    />
+                    <label htmlFor="isAccount" className="text-xs sm:text-sm font-bold text-zinc-600 cursor-pointer">Is Transactional Account?</label>
+                  </div>
                 </div>
-                <button 
-                  onClick={handleAddLedgerGroup}
-                  className="w-full bg-zinc-900 text-white py-4 rounded-2xl font-bold text-sm hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
-                >
-                  <Plus size={18} /> Add to Tree
-                </button>
+                <div className="flex gap-2 mt-2">
+                  {editingLedgerGroupId && (
+                    <button 
+                      onClick={() => setEditingLedgerGroupId(null)}
+                      className="flex-1 bg-zinc-200 text-zinc-600 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-sm hover:bg-zinc-300 transition-all"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button 
+                    onClick={() => editingLedgerGroupId ? handleSaveLedgerGroup() : handleAddLedgerGroup()}
+                    className="flex-[2] bg-zinc-900 text-white py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-sm hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
+                  >
+                    {editingLedgerGroupId ? <Save size={16} className="sm:w-[18px] sm:h-[18px]" /> : <Plus size={16} className="sm:w-[18px] sm:h-[18px]" />}
+                    {editingLedgerGroupId ? 'Save Changes' : 'Add to Tree'}
+                  </button>
+                </div>
               </div>
 
-              {/* Existing Groups */}
-              <div className="space-y-4">
-                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Current Structure</p>
-                <div className="max-h-[300px] overflow-y-auto pr-2 space-y-2 scrollbar-hide">
+              {/* Existing Groups (Tree View) */}
+              <div className="space-y-3 sm:space-y-4 flex-1 flex flex-col min-h-0">
+                <div className="flex items-center justify-between shrink-0">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Account Hierarchy</p>
+                  <button 
+                    onClick={initializeDefaultCOA}
+                    className="text-[10px] sm:text-xs font-bold text-primary hover:text-primary/80 transition-colors flex items-center gap-1"
+                  >
+                    <Plus size={12} className="sm:w-[14px] sm:h-[14px]" />
+                    Sync Default COA
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto pr-2 space-y-2 custom-scrollbar min-h-[200px]">
                   {ledgerGroups.length > 0 ? (
-                    ledgerGroups.map(group => (
-                      <div key={group.id} className="flex items-center justify-between p-4 bg-white border border-zinc-100 rounded-2xl hover:border-primary/20 transition-all group">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-2 h-2 rounded-full ${
-                            group.type === 'Asset' ? 'bg-emerald-500' :
-                            group.type === 'Liability' ? 'bg-red-500' :
-                            group.type === 'Equity' ? 'bg-blue-500' :
-                            group.type === 'Revenue' ? 'bg-indigo-500' : 'bg-orange-500'
-                          }`} />
-                          <div>
-                            <p className="text-sm font-bold text-zinc-900">{group.name}</p>
-                            <p className="text-[10px] text-zinc-400 font-medium uppercase">{group.type}</p>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => deleteLedgerGroup(group.id)}
-                          className="p-2 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all opacity-0 group-hover:opacity-100"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    ))
+                    renderTree()
                   ) : (
                     <div className="text-center py-8">
                       <p className="text-sm text-zinc-400 italic">No custom ledger groups defined yet.</p>
@@ -4181,6 +5269,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         </div>
       )}
     </div>
+  </div>
   );
 }
 
@@ -4864,8 +5953,8 @@ function WastageSection({ wastage, inventory }: { wastage: any[], inventory: Inv
           description: `Wastage: ${item.name} (${form.reason})`,
           timestamp: serverTimestamp(),
           lines: [
-            { accountId: 'wastage', accountName: 'Wastage Expense', debit: (item.costPerUnit || 0) * form.quantity, credit: 0 },
-            { accountId: 'inventory', accountName: 'Inventory Asset', debit: 0, credit: (item.costPerUnit || 0) * form.quantity }
+            { accountId: '5104', accountName: 'Wastage Expense', debit: (item.costPerUnit || 0) * form.quantity, credit: 0 },
+            { accountId: '1105', accountName: 'Inventory Asset', debit: 0, credit: (item.costPerUnit || 0) * form.quantity }
           ]
         });
       }
@@ -5221,7 +6310,8 @@ function DeliverySection({ drivers }: { drivers: any[] }) {
   };
 
   const deleteDriver = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this driver?')) return;
+    // Removed window.confirm for iframe compatibility
+    // if (!window.confirm('Are you sure you want to delete this driver?')) return;
     try {
       await deleteDoc(doc(db, 'staff', id));
     } catch (err) {
@@ -5332,23 +6422,30 @@ function DeliverySection({ drivers }: { drivers: any[] }) {
   );
 }
 
-function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], inventory: InventoryItem[], bills: any[] }) {
+function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppliers: any[], inventory: InventoryItem[], bills: any[], ledgerGroups: LedgerGroup[] }) {
   const [isAddingInvoice, setIsAddingInvoice] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<any | null>(null);
+  const [paymentAccounts, setPaymentAccounts] = useState<LedgerGroup[]>([]);
   const [invoiceForm, setInvoiceForm] = useState({
     invoiceNumber: '',
     date: new Date().toISOString().split('T')[0],
-    items: [] as { inventoryItemId: string, quantity: number, costPerUnit: number }[],
+    items: [] as { inventoryItemId: string, quantity: number, price: number }[],
     amountPaid: 0,
     totalAmount: 0,
-    accountId: 'cash'
+    accountId: '1101' // Default to Cash on Hand
   });
+
+  useEffect(() => {
+    // Filter Asset and Liability accounts that are marked as accounts (not groups)
+    const accounts = ledgerGroups.filter(g => (g.type === 'Asset' || g.type === 'Liability') && g.isAccount);
+    setPaymentAccounts(accounts);
+  }, [ledgerGroups]);
 
   const handleAddInvoiceItem = () => {
     if (inventory.length === 0) return;
     setInvoiceForm({
       ...invoiceForm,
-      items: [...invoiceForm.items, { inventoryItemId: inventory[0].id, quantity: 1, costPerUnit: 0 }]
+      items: [...invoiceForm.items, { inventoryItemId: inventory[0].id, quantity: 1, price: 0 }]
     });
   };
 
@@ -5356,13 +6453,13 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
     const newItems = [...invoiceForm.items];
     newItems[index] = { ...newItems[index], [field]: value };
     
-    const newTotal = newItems.reduce((sum, item) => sum + (item.quantity * item.costPerUnit), 0);
+    const newTotal = newItems.reduce((sum, item) => sum + (item.quantity * item.price), 0);
     setInvoiceForm({ ...invoiceForm, items: newItems, totalAmount: newTotal });
   };
 
   const removeInvoiceItem = (index: number) => {
     const newItems = invoiceForm.items.filter((_, i) => i !== index);
-    const newTotal = newItems.reduce((sum, item) => sum + (item.quantity * item.costPerUnit), 0);
+    const newTotal = newItems.reduce((sum, item) => sum + (item.quantity * item.price), 0);
     setInvoiceForm({ ...invoiceForm, items: newItems, totalAmount: newTotal });
   };
 
@@ -5372,6 +6469,10 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
       // 1. Save the bill
       const billRef = await addDoc(collection(db, 'bills'), {
         ...invoiceForm,
+        items: invoiceForm.items.map(item => ({
+          ...item,
+          price: Math.round(item.price * 100)
+        })),
         totalAmount: Math.round(invoiceForm.totalAmount * 100),
         amountPaid: Math.round(invoiceForm.amountPaid * 100),
         supplierId: selectedSupplier.id,
@@ -5380,20 +6481,36 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
         timestamp: serverTimestamp()
       });
 
-      // 2. Update inventory stock and record in journal
+      // 2. Update inventory stock, average cost and record in journal
       for (const item of invoiceForm.items) {
         const invItem = inventory.find(i => i.id === item.inventoryItemId);
         if (invItem) {
+          const currentStock = invItem.stock || 0;
+          const currentCost = invItem.costPerUnit || 0; // in cents
+          const newQty = item.quantity;
+          const newUnitPrice = Math.round(item.price * 100); // in cents
+          
+          let newAverageCost = currentCost;
+          const newTotalStock = currentStock + newQty;
+          
+          if (newTotalStock > 0) {
+            newAverageCost = Math.round(((currentStock * currentCost) + (newQty * newUnitPrice)) / newTotalStock);
+          } else {
+            newAverageCost = newUnitPrice;
+          }
+
           await updateDoc(doc(db, 'inventory', item.inventoryItemId), {
-            stock: (invItem.stock || 0) + item.quantity,
+            stock: newTotalStock,
+            costPerUnit: newAverageCost,
+            averageCost: newAverageCost,
             lastUpdated: serverTimestamp()
           });
 
           // Record individual item purchase in journal for tracking
           await addDoc(collection(db, 'journal'), {
             type: 'expense',
-            amount: Math.round(item.quantity * item.costPerUnit * 100),
-            description: `Purchase: ${invItem.name} (${item.quantity} ${invItem.unit} @ ${formatCurrencyDirect(item.costPerUnit)}) from ${selectedSupplier.name}`,
+            amount: Math.round(item.quantity * item.price * 100),
+            description: `Purchase: ${invItem.name} (${item.quantity} ${invItem.unit} @ ${formatCurrency(Math.round(item.price * 100))}) from ${selectedSupplier.name}`,
             timestamp: serverTimestamp(),
             vendorId: selectedSupplier.id,
             billId: billRef.id
@@ -5408,12 +6525,17 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
         description: `Purchase from ${selectedSupplier.name}`,
         timestamp: serverTimestamp(),
         lines: [
-          { accountId: 'inventory', accountName: 'Inventory Asset', debit: Math.round(invoiceForm.totalAmount * 100), credit: 0 },
+          { accountId: '1105', accountName: 'Inventory', debit: Math.round(invoiceForm.totalAmount * 100), credit: 0 },
           ...(invoiceForm.amountPaid > 0 ? [
-            { accountId: invoiceForm.accountId, accountName: invoiceForm.accountId === 'cash' ? 'Cash' : 'Bank', debit: 0, credit: Math.round(invoiceForm.amountPaid * 100) }
+            { 
+              accountId: invoiceForm.accountId, 
+              accountName: paymentAccounts.find(a => a.code === invoiceForm.accountId || a.id === invoiceForm.accountId)?.name || 'Payment Account', 
+              debit: 0, 
+              credit: Math.round(invoiceForm.amountPaid * 100) 
+            }
           ] : []),
           ...(invoiceForm.totalAmount > invoiceForm.amountPaid ? [
-            { accountId: 'accounts_payable', accountName: 'Accounts Payable', debit: 0, credit: Math.round((invoiceForm.totalAmount - invoiceForm.amountPaid) * 100) }
+            { accountId: '2101', accountName: 'Accounts Payable', debit: 0, credit: Math.round((invoiceForm.totalAmount - invoiceForm.amountPaid) * 100) }
           ] : [])
         ]
       });
@@ -5425,7 +6547,7 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
         items: [],
         amountPaid: 0,
         totalAmount: 0,
-        accountId: 'cash'
+        accountId: '1101'
       });
       setSelectedSupplier(null);
     } catch (err) {
@@ -5492,8 +6614,9 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
                 value={invoiceForm.accountId}
                 onChange={e => setInvoiceForm({ ...invoiceForm, accountId: e.target.value })}
               >
-                <option value="cash">Cash</option>
-                <option value="bank">Bank</option>
+                {paymentAccounts.map(acc => (
+                  <option key={acc.id} value={acc.code || acc.id}>{acc.name} ({acc.code})</option>
+                ))}
               </select>
             </div>
           </div>
@@ -5536,12 +6659,12 @@ function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], i
                     type="number"
                     placeholder="Cost/Unit"
                     className="w-full p-2 rounded-lg border border-border bg-background text-foreground text-sm"
-                    value={item.costPerUnit || ''}
-                    onChange={e => updateInvoiceItem(index, 'costPerUnit', Number(e.target.value))}
+                    value={item.price || ''}
+                    onChange={e => updateInvoiceItem(index, 'price', Number(e.target.value))}
                   />
                 </div>
                 <div className="w-32 text-right font-bold text-foreground">
-                  {formatCurrencyDirect(item.quantity * item.costPerUnit)}
+                  {formatCurrencyDirect(item.quantity * item.price)}
                 </div>
                 <button 
                   onClick={() => removeInvoiceItem(index)}

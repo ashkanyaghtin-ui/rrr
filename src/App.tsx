@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
-import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, getDocs, deleteDoc, doc, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, getDocs, deleteDoc, doc, where, writeBatch } from 'firebase/firestore';
 import { useAuth } from './contexts/AuthContext';
 import { MenuItem, Category, CartItem, Order } from './types';
 import Menu from './components/Menu';
@@ -289,6 +289,22 @@ export default function App() {
   }, [profile, isSuperAdmin]);
 
   useEffect(() => {
+    // One-time table reset as requested by user
+    const resetTables = async () => {
+      try {
+        const tablesSnap = await getDocs(collection(db, 'tables'));
+        const batch = writeBatch(db);
+        tablesSnap.forEach(d => {
+          batch.update(d.ref, { status: 'available' });
+        });
+        await batch.commit();
+        console.log('All tables reset to available');
+      } catch (err) {
+        console.error('Error resetting tables:', err);
+      }
+    };
+    resetTables();
+
     const unsubscribeMenu = onSnapshot(collection(db, 'menu'), (snapshot) => {
       setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MenuItem)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'menu'));
@@ -447,7 +463,7 @@ export default function App() {
 
             <Route path="/admin/pos" element={
               (!isAdminAuthenticated && !isSuperAdmin) ? <Navigate to="/admin/login" replace /> :
-              <POS onClose={() => navigate('/admin')} />
+              <POS onClose={() => navigate('/admin')} isSuperAdmin={isSuperAdmin} />
             } />
           </Routes>
         )}

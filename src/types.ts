@@ -51,7 +51,7 @@ export interface Order {
     notes?: string;
   }[];
   total: number;
-  status: 'pending' | 'confirmed' | 'preparing' | 'serving' | 'done-serving' | 'awaiting-bill' | 'finalized' | 'cancelled' | 'paid';
+  status: 'pending' | 'awaiting-confirmation' | 'confirmed' | 'preparing' | 'serving' | 'done-serving' | 'awaiting-bill' | 'finalized' | 'cancelled' | 'paid';
   createdAt: any;
   invoicedAt?: any;
   paymentIntentId?: string;
@@ -198,7 +198,8 @@ export interface Cheque {
 export interface LedgerGroup {
   id: string;
   name: string;
-  type: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
+  code?: string;
+  type: 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense';
   parentGroupId?: string;
   isAccount: boolean; // If true, it's a ledger account, otherwise it's a group
   description?: string;

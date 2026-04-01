@@ -2,21 +2,23 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, OperationType, handleFirestoreError } from '../firebase';
 import { collection, onSnapshot, query, orderBy, updateDoc, doc, addDoc, serverTimestamp, getDocs, where, getDoc, limit, deleteField } from 'firebase/firestore';
-import { ShoppingBag, Clock, CheckCircle2, Ban, Phone, MapPin, User, Package, ArrowLeft, ChefHat, Truck, FileText, Printer, Plus, Utensils, LayoutGrid, CreditCard, Banknote, Receipt, Users, Split, Calculator, X, Bell, Maximize2, MoreVertical, ChevronDown, Calendar, Hash, Tag, Pencil, Move, Layout, Search, AlertTriangle } from 'lucide-react';
+import { ShoppingBag, Clock, CheckCircle2, Ban, Phone, MapPin, User, Package, ArrowLeft, ChefHat, Truck, FileText, Printer, Plus, Utensils, LayoutGrid, CreditCard, Banknote, Receipt, Users, Split, Calculator, X, Bell, Maximize2, MoreVertical, ChevronDown, Calendar, Hash, Tag, Pencil, Move, Layout, Search, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency } from '../utils/format';
 import { Order, MenuItem, Table, Category, Customer, CustomerGroup } from '../types';
 
 interface POSProps {
   onClose: () => void;
+  isSuperAdmin?: boolean;
 }
 
-export default function POS({ onClose }: POSProps) {
+export default function POS({ onClose, isSuperAdmin }: POSProps) {
   const { user } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [tables, setTables] = useState<Table[]>([]);
+  const [inventory, setInventory] = useState<any[]>([]);
   const [filter, setFilter] = useState<Order['status'] | 'all'>('all');
   const [orderTypeFilter, setOrderTypeFilter] = useState<Order['orderType'] | 'all'>('all');
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
@@ -65,6 +67,9 @@ export default function POS({ onClose }: POSProps) {
   const [isMaximizeModalOpen, setIsMaximizeModalOpen] = useState(false);
   const [isUpdateOrderModalOpen, setIsUpdateOrderModalOpen] = useState(false);
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [isClearanceModalOpen, setIsClearanceModalOpen] = useState(false);
+  const [clearanceCallback, setClearanceCallback] = useState<(() => void) | null>(null);
+  const [newOrderPaymentMethod, setNewOrderPaymentMethod] = useState<Order['paymentMethod']>('cash');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   
@@ -88,11 +93,11 @@ export default function POS({ onClose }: POSProps) {
   useEffect(() => {
     if (!user) return;
     
-    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(100));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const allOrders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
-      // Show only active orders in POS (not finalized or cancelled)
-      setOrders(allOrders.filter(o => o.status !== 'cancelled' && o.status !== 'finalized'));
+      // Show active orders and recently finalized/cancelled ones
+      setOrders(allOrders);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'orders'));
 
     const unsubscribeMenu = onSnapshot(collection(db, 'menu'), (snapshot) => {
@@ -115,6 +120,10 @@ export default function POS({ onClose }: POSProps) {
       setDrivers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'staff'));
 
+    const unsubscribeInventory = onSnapshot(collection(db, 'inventory'), (snapshot) => {
+      setInventory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'inventory'));
+
     return () => {
       unsubscribe();
       unsubscribeMenu();
@@ -122,6 +131,7 @@ export default function POS({ onClose }: POSProps) {
       unsubscribeTables();
       unsubscribeGroups();
       unsubscribeDrivers();
+      unsubscribeInventory();
     };
   }, [user]);
 
@@ -207,7 +217,7 @@ export default function POS({ onClose }: POSProps) {
     };
   }, [user, lastOrderTimestamp]);
 
-  const printKOT = async (order: Order) => {
+  const printKOT = async (order: Order, isReprint: boolean = false) => {
     // If print servers are configured, send to all servers
     if (printServerUrls.length > 0) {
       try {
@@ -215,7 +225,7 @@ export default function POS({ onClose }: POSProps) {
           fetch(`${url}/print-kot`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(order)
+            body: JSON.stringify({ ...order, isReprint })
           })
         ));
         return;
@@ -232,8 +242,11 @@ export default function POS({ onClose }: POSProps) {
     }
 
     const itemsHtml = order.items.map(item => `
-      <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-family: monospace;">
-        <span>${item.quantity}x ${item.name}</span>
+      <div style="margin-bottom: 8px; font-family: monospace;">
+        <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;">
+          <span>${item.quantity}x ${item.name}</span>
+        </div>
+        ${item.notes ? `<div style="font-size: 12px; margin-left: 20px; color: #555;">- ${item.notes}</div>` : ''}
       </div>
     `).join('');
 
@@ -252,11 +265,15 @@ export default function POS({ onClose }: POSProps) {
             .item-row { display: flex; justify-content: space-between; margin: 5px 0; }
             .totals { border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px; }
             .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin-top: 5px; }
+            .reprint { font-size: 20px; font-weight: bold; text-align: center; margin-bottom: 10px; border: 3px solid #ff0000; color: #ff0000; padding: 10px; }
+            .notes { border-top: 1px dashed #000; margin-top: 10px; padding-top: 10px; font-style: italic; }
           </style>
         </head>
         <body onload="window.print(); window.close();">
+          ${isReprint ? '<div class="reprint">*** REPRINT ***</div>' : ''}
           <div class="header">
             <h2 style="margin: 0;">KITCHEN ORDER</h2>
+            <h3 style="margin: 5px 0;">KOT #${order.kotNo || 'N/A'}</h3>
             <p style="margin: 5px 0;">Order: #${order.id.slice(-6).toUpperCase()}</p>
             <p style="margin: 5px 0;">Type: ${order.orderType.toUpperCase()}</p>
             ${order.tableNumber ? `<p style="margin: 5px 0; font-size: 20px; font-weight: bold;">TABLE: ${order.tableNumber}</p>` : ''}
@@ -265,6 +282,12 @@ export default function POS({ onClose }: POSProps) {
           <div class="items">
             ${itemsHtml}
           </div>
+          ${order.notes ? `
+          <div class="notes">
+            <strong>Notes:</strong><br/>
+            ${order.notes}
+          </div>
+          ` : ''}
           <div class="totals">
             <div class="item-row">
               <span>Subtotal:</span>
@@ -390,7 +413,17 @@ export default function POS({ onClose }: POSProps) {
 
     setIsSubmitting(true);
     try {
-      const total = currentOrderItems.reduce((sum, { item, quantity }) => sum + (item.price * quantity), 0);
+      const subtotal = currentOrderItems.reduce((sum, { item, quantity }) => sum + (item.price * quantity), 0);
+      let total = subtotal;
+
+      if (editingOrder && editingOrder.discount) {
+        if (editingOrder.discountType === 'percentage') {
+          total = Math.round(subtotal * (1 - editingOrder.discount / 100));
+        } else {
+          total = Math.max(0, subtotal - Math.round(editingOrder.discount * 100));
+        }
+      }
+
       const orderData: any = {
         userId: user?.uid || 'walk-in',
         waiter: user?.displayName || user?.email || 'Staff',
@@ -398,10 +431,14 @@ export default function POS({ onClose }: POSProps) {
           itemId: item.id,
           name: item.name,
           price: item.price,
-          quantity
+          quantity,
+          category: item.category || 'Other'
         })),
         total,
-        status: editingOrder ? editingOrder.status : 'confirmed',
+        paymentMethod: newOrderPaymentMethod,
+        status: editingOrder ? editingOrder.status : (newOrderPaymentMethod === 'online' ? 'confirmed' : 'awaiting-confirmation'),
+        discount: editingOrder?.discount || 0,
+        discountType: editingOrder?.discountType || 'percentage',
         orderType: orderTypeInput,
         driverId: orderTypeInput === 'delivery' ? driverIdInput : null,
         driverName: orderTypeInput === 'delivery' ? drivers.find(d => d.id === driverIdInput)?.name || null : null,
@@ -417,6 +454,17 @@ export default function POS({ onClose }: POSProps) {
         const updatedOrder = { ...editingOrder, ...orderData };
         printKOT(updatedOrder as Order);
       } else {
+        // Generate a sequential KOT number based on today's orders
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayOrders = orders.filter(o => {
+          if (!o.createdAt) return false;
+          const orderDate = o.createdAt.toDate ? o.createdAt.toDate() : new Date(o.createdAt);
+          return orderDate >= today;
+        });
+        const nextKotNo = (todayOrders.length + 1).toString().padStart(3, '0');
+        
+        orderData.kotNo = nextKotNo;
         orderData.createdAt = serverTimestamp();
         await addDoc(collection(db, 'orders'), orderData);
         if (selectedTable) {
@@ -491,15 +539,54 @@ export default function POS({ onClose }: POSProps) {
     }
   };
 
+  const getAmountToPay = () => {
+    if (!settlingOrder) return 0;
+    if (isSplitByItem) {
+      const subtotal = selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+      const orderSubtotal = settlingOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+      let discountAmount = 0;
+      
+      if (settlingOrder.discount && settlingOrder.discount > 0) {
+        if (settlingOrder.discountType === 'percentage') {
+          discountAmount = Math.round(subtotal * (settlingOrder.discount / 100));
+        } else {
+          const proportion = subtotal / orderSubtotal;
+          discountAmount = Math.round((settlingOrder.discount * 100) * proportion);
+        }
+      }
+      
+      return Math.max(0, subtotal - discountAmount);
+    } else if (isSplitByAmount) {
+      return parseFloat(splitAmount) * 100 || 0;
+    } else if (isSplitBill) {
+      return Math.round(settlingOrder.total / numberOfSplits);
+    }
+    return settlingOrder.total;
+  };
+
   const settleBill = async () => {
-    if (!settlingOrder || isSubmitting) return;
     setIsSubmitting(true);
     try {
       let amountToPay = settlingOrder.total;
       let itemsToPay = settlingOrder.items;
 
       if (isSplitByItem) {
-        amountToPay = selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        const subtotal = selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        const orderSubtotal = settlingOrder.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        let discountAmount = 0;
+        
+        if (settlingOrder.discount && settlingOrder.discount > 0) {
+          if (settlingOrder.discountType === 'percentage') {
+            discountAmount = Math.round(subtotal * (settlingOrder.discount / 100));
+          } else {
+            // Pro-rate the fixed discount based on the proportion of the subtotal being paid
+            const proportion = subtotal / orderSubtotal;
+            discountAmount = Math.round((settlingOrder.discount * 100) * proportion);
+          }
+        }
+        
+        amountToPay = Math.max(0, subtotal - discountAmount);
+        
         itemsToPay = selectedSplitItems.map(si => ({
           itemId: si.itemId,
           name: si.name,
@@ -531,12 +618,6 @@ export default function POS({ onClose }: POSProps) {
         cardAmount = amountToPay;
       }
 
-      const journalLines = [
-        ...(cashAmount > 0 ? [{ accountId: 'cash', accountName: 'Cash', debit: cashAmount, credit: 0 }] : []),
-        ...(cardAmount > 0 ? [{ accountId: 'bank', accountName: 'Bank', debit: cardAmount, credit: 0 }] : []),
-        { accountId: 'sales', accountName: 'Sales Revenue', debit: 0, credit: amountToPay }
-      ];
-
       const currentPayments = settlingOrder.payments || [];
       const newPayment = {
         method: paymentMethod,
@@ -546,6 +627,44 @@ export default function POS({ onClose }: POSProps) {
         cardAmount: cardAmount
       };
       const updatedPayments = [...currentPayments, newPayment];
+
+      // Calculate COGS for the current payment
+      let totalCOGS = 0;
+      const itemsToProcess = isSplitByItem ? selectedSplitItems : settlingOrder.items;
+      const paymentRatio = isSplitByItem ? 1 : (amountToPay / settlingOrder.total);
+
+      for (const item of itemsToProcess) {
+        const menuItem = menuItems.find(mi => mi.id === item.itemId);
+        if (menuItem?.recipe) {
+          for (const ingredient of menuItem.recipe) {
+            const invItem = inventory.find(inv => inv.id === ingredient.inventoryItemId);
+            if (invItem) {
+              const cost = invItem.averageCost || invItem.costPerUnit || 0;
+              totalCOGS += cost * (ingredient.quantity || 0) * (item.quantity || 0) * paymentRatio;
+            }
+          }
+        } else {
+          const invItem = inventory.find(inv => inv.name === item.name);
+          if (invItem) {
+            const cost = invItem.averageCost || invItem.costPerUnit || 0;
+            totalCOGS += cost * (item.quantity || 0) * paymentRatio;
+          }
+        }
+      }
+
+      const taxAmount = Math.round(amountToPay - (amountToPay / 1.05));
+      const netAmount = amountToPay - taxAmount;
+
+      const journalLines = [
+        ...(cashAmount > 0 ? [{ accountId: '1101', accountName: 'Cash on Hand', debit: cashAmount, credit: 0 }] : []),
+        ...(cardAmount > 0 ? [{ accountId: '1102', accountName: 'Bank Accounts', debit: cardAmount, credit: 0 }] : []),
+        { accountId: '4101', accountName: 'Sales Revenue', debit: 0, credit: netAmount },
+        { accountId: '2104', accountName: 'VAT Payable', debit: 0, credit: taxAmount },
+        ...(totalCOGS > 0 ? [
+          { accountId: '5101', accountName: 'Cost of Goods Sold', debit: Math.round(totalCOGS), credit: 0 },
+          { accountId: '1105', accountName: 'Inventory', debit: 0, credit: Math.round(totalCOGS) }
+        ] : [])
+      ];
 
       if (isSplitByItem) {
         // Partial payment by item
@@ -570,14 +689,15 @@ export default function POS({ onClose }: POSProps) {
             payments: updatedPayments,
             amountReceived: amount,
             changeGiven: change,
-            items: [],
-            total: 0,
             completedAt: serverTimestamp()
           });
           if (settlingOrder.tableId) {
             const tableIds = settlingOrder.tableId.split(',');
             for (const tId of tableIds) {
-              await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+              const trimmedId = tId.trim();
+              if (trimmedId) {
+                await updateDoc(doc(db, 'tables', trimmedId), { status: 'available' });
+              }
             }
           }
         } else {
@@ -595,7 +715,7 @@ export default function POS({ onClose }: POSProps) {
           orderId: settlingOrder.id,
           type: 'sale',
           amount: amountToPay,
-          description: `POS Partial Sale (By Item) - Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           items: itemsToPay
         });
@@ -638,6 +758,7 @@ export default function POS({ onClose }: POSProps) {
               await updateDoc(doc(db, 'tables', tId), { status: 'available' });
             }
           }
+          await deductInventory(settlingOrder);
         } else {
           await updateDoc(doc(db, 'orders', settlingOrder.id), {
             total: remainingTotal,
@@ -651,7 +772,7 @@ export default function POS({ onClose }: POSProps) {
           orderId: settlingOrder.id,
           type: 'sale',
           amount: amountToPay,
-          description: `POS Partial Sale - Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp()
         });
 
@@ -683,7 +804,10 @@ export default function POS({ onClose }: POSProps) {
         if (settlingOrder.tableId) {
           const tableIds = settlingOrder.tableId.split(',');
           for (const tId of tableIds) {
-            await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+            const trimmedId = tId.trim();
+            if (trimmedId) {
+              await updateDoc(doc(db, 'tables', trimmedId), { status: 'available' });
+            }
           }
         }
         await deductInventory(settlingOrder);
@@ -693,7 +817,7 @@ export default function POS({ onClose }: POSProps) {
           orderId: settlingOrder.id,
           type: 'sale',
           amount: settlingOrder.total,
-          description: `POS Sale - Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           items: settlingOrder.items
         });
@@ -703,6 +827,7 @@ export default function POS({ onClose }: POSProps) {
           date: new Date().toISOString().split('T')[0],
           reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
+          orderId: settlingOrder.id,
           timestamp: serverTimestamp(),
           lines: journalLines
         });
@@ -719,12 +844,22 @@ export default function POS({ onClose }: POSProps) {
         isPartial: true
       } as any);
 
-      setIsSplitBill(false);
-      setIsSplitByItem(false);
-      setIsSplitByAmount(false);
-      setSelectedSplitItems([]);
+      // Only reset split states if the order is fully paid
+      const isFullyPaid = isSplitByItem ? (settlingOrder.items.length === 0) : (settlingOrder.total - amountToPay <= 0);
+      
+      if (isFullyPaid) {
+        setIsSplitBill(false);
+        setIsSplitByItem(false);
+        setIsSplitByAmount(false);
+        setSelectedSplitItems([]);
+        setSplitAmount('');
+      } else {
+        // If not fully paid, we stay in split mode but reset the current selection
+        setSelectedSplitItems([]);
+        setSplitAmount('');
+      }
+      
       setAmountReceived('');
-      setSplitAmount('');
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${settlingOrder?.id}`);
     } finally {
@@ -751,11 +886,16 @@ export default function POS({ onClose }: POSProps) {
 
       if (status === 'finalized' || status === 'cancelled') {
         const orderDoc = await getDoc(doc(db, 'orders', orderId));
-        const order = orderDoc.exists() ? { id: orderDoc.id, ...orderDoc.data() } as Order : null;
-        if (order && order.tableId) {
-          const tableIds = order.tableId.split(',');
+        const orderData = orderDoc.exists() ? orderDoc.data() : null;
+        const tableId = orderData?.tableId;
+        
+        if (tableId) {
+          const tableIds = String(tableId).split(',');
           for (const tId of tableIds) {
-            await updateDoc(doc(db, 'tables', tId), { status: 'available' });
+            const trimmedId = tId.trim();
+            if (trimmedId) {
+              await updateDoc(doc(db, 'tables', trimmedId), { status: 'available' });
+            }
           }
         }
       }
@@ -901,8 +1041,10 @@ export default function POS({ onClose }: POSProps) {
     return statusMatch && typeMatch;
   });
 
-  const getStatusColor = (status: Order['status']) => {
+  const getStatusColor = (status: Order['status'] | 'all') => {
+    if (status === 'all') return 'bg-primary text-white';
     switch (status) {
+      case 'awaiting-confirmation': return 'bg-yellow-500 text-white';
       case 'paid': return 'bg-blue-500 text-white';
       case 'confirmed': return 'bg-amber-500 text-white';
       case 'preparing': return 'bg-orange-500 text-white';
@@ -917,7 +1059,7 @@ export default function POS({ onClose }: POSProps) {
 
   const getStatusText = (status: Order['status']) => {
     switch (status) {
-      case 'pending': return 'Confirm Order';
+      case 'awaiting-confirmation': return 'Confirm Order';
       case 'confirmed': return 'Start Preparing';
       case 'preparing': return 'Start Serving';
       case 'serving': return 'Done Serving';
@@ -929,7 +1071,7 @@ export default function POS({ onClose }: POSProps) {
 
   const getNextStatus = (status: Order['status']): Order['status'] | null => {
     switch (status) {
-      case 'pending': return 'confirmed';
+      case 'awaiting-confirmation': return 'confirmed';
       case 'confirmed': return 'preparing';
       case 'preparing': return 'serving';
       case 'serving': return 'done-serving';
@@ -940,10 +1082,10 @@ export default function POS({ onClose }: POSProps) {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col overflow-hidden text-foreground">
+    <div className={`${isSuperAdmin ? 'h-[calc(100dvh-2rem)]' : 'h-[100dvh]'} bg-background flex flex-col overflow-hidden text-foreground`}>
       {/* POS Header */}
-      <div className="bg-card border-b border-border px-6 py-4 flex items-center justify-between shadow-sm z-10 relative">
-        <div className="flex items-center gap-4">
+      <div className="bg-card border-b border-border px-4 py-3 lg:px-6 lg:py-4 flex flex-col lg:flex-row items-center justify-between gap-4 shadow-sm z-10 relative">
+        <div className="flex items-center justify-between w-full lg:w-auto gap-4">
           <button 
             onClick={onClose}
             className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-all"
@@ -954,24 +1096,26 @@ export default function POS({ onClose }: POSProps) {
             <img 
               src="https://res.cloudinary.com/htyeg8qey/image/upload/v1742727215/p03r5f8p99g6yit80h6k.png" 
               alt="Robotic ERP Logo" 
-              className="h-10 w-auto object-contain"
+              className="h-8 lg:h-10 w-auto object-contain"
               referrerPolicy="no-referrer"
             />
             <div>
-              <h1 className="text-xl font-black text-foreground tracking-tight leading-none">POS SYSTEM</h1>
+              <h1 className="text-lg lg:text-xl font-black text-foreground tracking-tight leading-none">POS SYSTEM</h1>
               <p className="text-[8px] font-bold text-muted-foreground uppercase tracking-widest">Live Order Management</p>
             </div>
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <div className="flex bg-muted p-1 rounded-lg overflow-x-auto max-w-xl shadow-inner border border-border/50">
-            {(['all', 'pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized'] as const).map((s) => (
+        <div className="flex flex-col gap-1.5 w-full lg:w-auto overflow-hidden flex-1 max-w-3xl">
+          <div className="flex gap-1.5 overflow-x-auto custom-scrollbar pb-1">
+            {(['all', 'awaiting-confirmation', 'pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilter(s)}
-                className={`px-3 py-1.5 rounded-md text-[9px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
-                  filter === s ? 'bg-card text-primary shadow-sm border border-border/50' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                className={`px-3 py-1.5 lg:px-4 lg:py-2 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all shadow-sm border border-border/50 whitespace-nowrap ${
+                  filter === s 
+                    ? `${getStatusColor(s)} shadow-md scale-105 z-10` 
+                    : 'bg-card text-muted-foreground hover:text-foreground hover:bg-muted transition-all'
                 }`}
               >
                 {s.replace('-', ' ')}
@@ -979,13 +1123,15 @@ export default function POS({ onClose }: POSProps) {
             ))}
           </div>
 
-          <div className="flex bg-muted p-1 rounded-lg overflow-x-auto max-w-xl shadow-inner border border-border/50">
+          <div className="flex gap-1.5 overflow-x-auto custom-scrollbar pb-1">
             {(['all', 'dine-in', 'take-out', 'delivery', 'pickup'] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setOrderTypeFilter(t)}
-                className={`px-3 py-1.5 rounded-md text-[9px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
-                  orderTypeFilter === t ? 'bg-card text-primary shadow-sm border border-border/50' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                className={`px-3 py-1.5 lg:px-4 lg:py-2 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all shadow-sm border border-border/50 whitespace-nowrap ${
+                  orderTypeFilter === t 
+                    ? (t === 'dine-in' ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/20 scale-105 z-10' : t === 'all' ? 'bg-primary text-primary-foreground shadow-md shadow-primary/20 scale-105 z-10' : 'bg-blue-500 text-white shadow-md shadow-blue-500/20 scale-105 z-10')
+                    : 'bg-card text-muted-foreground hover:text-foreground hover:bg-muted transition-all'
                 }`}
               >
                 {t.replace('-', ' ')}
@@ -994,12 +1140,12 @@ export default function POS({ onClose }: POSProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-right hidden md:block">
-            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Active Orders</p>
-            <p className="text-xl font-black text-foreground">{orders.length}</p>
+        <div className="flex items-center gap-2 w-full lg:w-auto overflow-x-auto custom-scrollbar pb-2 lg:pb-0 shrink-0">
+          <div className="text-right hidden xl:block shrink-0 mr-2">
+            <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">Active Orders</p>
+            <p className="text-lg font-black text-foreground leading-none">{orders.length}</p>
           </div>
-          <div className="w-px h-8 bg-border hidden md:block"></div>
+          <div className="w-px h-6 bg-border hidden xl:block shrink-0 mr-2"></div>
           <button 
             onClick={() => {
               setOrderTypeInput('take-out');
@@ -1007,9 +1153,9 @@ export default function POS({ onClose }: POSProps) {
               setPosStep('menu');
               setIsNewOrderModalOpen(true);
             }}
-            className="bg-primary text-primary-foreground px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-black/10 hover:bg-primary/90 transition-all hover:scale-105 active:scale-95"
+            className="bg-blue-500 text-white px-3 py-2 lg:px-4 lg:py-2.5 rounded-xl flex items-center gap-1.5 font-black text-[9px] lg:text-[10px] uppercase tracking-wider shadow-md shadow-blue-500/20 hover:bg-blue-600 transition-all hover:scale-105 active:scale-95 shrink-0"
           >
-            <ShoppingBag size={18} /> Takeaway
+            <ShoppingBag size={14} className="lg:w-[16px] lg:h-[16px]" /> Takeaway
           </button>
           <button 
             onClick={() => {
@@ -1018,9 +1164,20 @@ export default function POS({ onClose }: POSProps) {
               setPosStep('menu');
               setIsNewOrderModalOpen(true);
             }}
-            className="bg-primary/10 text-primary px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-primary/5 hover:bg-primary/20 transition-all hover:scale-105 active:scale-95"
+            className="bg-blue-600 text-white px-3 py-2 lg:px-4 lg:py-2.5 rounded-xl flex items-center gap-1.5 font-black text-[9px] lg:text-[10px] uppercase tracking-wider shadow-md shadow-blue-600/20 hover:bg-blue-700 transition-all hover:scale-105 active:scale-95 shrink-0"
           >
-            <Truck size={18} /> Delivery
+            <Truck size={14} className="lg:w-[16px] lg:h-[16px]" /> Delivery
+          </button>
+          <button 
+            onClick={() => {
+              setOrderTypeInput('pickup');
+              setSelectedTable(null);
+              setPosStep('menu');
+              setIsNewOrderModalOpen(true);
+            }}
+            className="bg-purple-600 text-white px-3 py-2 lg:px-4 lg:py-2.5 rounded-xl flex items-center gap-1.5 font-black text-[9px] lg:text-[10px] uppercase tracking-wider shadow-md shadow-purple-600/20 hover:bg-purple-700 transition-all hover:scale-105 active:scale-95 shrink-0"
+          >
+            <ShoppingBag size={14} className="lg:w-[16px] lg:h-[16px]" /> Pickup
           </button>
           <button 
             onClick={() => {
@@ -1028,19 +1185,19 @@ export default function POS({ onClose }: POSProps) {
               setPosStep('tables');
               setIsNewOrderModalOpen(true);
             }}
-            className="bg-primary text-primary-foreground px-5 py-2.5 rounded-xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all hover:scale-105 active:scale-95"
+            className="bg-emerald-500 text-white px-3 py-2 lg:px-4 lg:py-2.5 rounded-xl flex items-center gap-1.5 font-black text-[9px] lg:text-[10px] uppercase tracking-wider shadow-md shadow-emerald-500/20 hover:bg-emerald-600 transition-all hover:scale-105 active:scale-95 shrink-0"
           >
-            <Utensils size={18} /> Dine-In
+            <Utensils size={14} className="lg:w-[16px] lg:h-[16px]" /> Dine-In
           </button>
         </div>
       </div>
 
       {/* New Order Modal */}
       {isNewOrderModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-2 sm:p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsNewOrderModalOpen(false)} />
-          <div className="relative bg-card w-full max-w-6xl max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-border">
-            <div className="p-8 border-b border-border flex items-center justify-between">
+          <div className="relative bg-card w-full max-w-6xl h-[calc(100dvh-1rem)] sm:h-[calc(100dvh-2rem)] rounded-[1.5rem] sm:rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-border">
+            <div className="p-4 sm:p-6 border-b border-border flex items-center justify-between shrink-0">
               <div className="flex items-center gap-4">
                 {posStep === 'menu' && orderTypeInput === 'dine-in' && (
                   <button 
@@ -1066,10 +1223,10 @@ export default function POS({ onClose }: POSProps) {
 
             <div className="flex-1 flex flex-col overflow-hidden">
               {posStep === 'tables' ? (
-                <div className="flex-1 flex flex-col p-8 bg-muted/30 m-4 rounded-[2.5rem] border-2 border-border shadow-inner">
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-black text-foreground">Select Table</h3>
-                    <div className="flex items-center gap-4">
+                <div className="flex-1 flex flex-col p-4 sm:p-6 bg-muted/30 m-2 sm:m-4 rounded-[1.5rem] sm:rounded-[2.5rem] border-2 border-border shadow-inner overflow-hidden">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 sm:mb-6 shrink-0">
+                    <h3 className="text-lg sm:text-xl font-black text-foreground">Select Table</h3>
+                    <div className="flex items-center gap-2 sm:gap-4">
                       {isMergingTables && selectedTablesToMerge.length > 0 && (
                         <button
                           onClick={() => {
@@ -1085,7 +1242,7 @@ export default function POS({ onClose }: POSProps) {
                             setIsMergingTables(false);
                             setSelectedTablesToMerge([]);
                           }}
-                          className="px-6 py-2 bg-primary text-primary-foreground font-bold rounded-xl hover:bg-primary/90 transition-colors"
+                          className="px-4 py-2 sm:px-6 sm:py-2 bg-primary text-primary-foreground font-bold rounded-xl hover:bg-primary/90 transition-colors text-sm whitespace-nowrap"
                         >
                           Confirm Merge ({selectedTablesToMerge.length})
                         </button>
@@ -1095,7 +1252,7 @@ export default function POS({ onClose }: POSProps) {
                           setIsMergingTables(!isMergingTables);
                           setSelectedTablesToMerge([]);
                         }}
-                        className={`px-4 py-2 rounded-xl font-bold transition-colors ${
+                        className={`px-3 py-2 sm:px-4 sm:py-2 rounded-xl font-bold transition-colors text-sm whitespace-nowrap ${
                           isMergingTables ? 'bg-amber-500/10 text-amber-500' : 'bg-card border-2 border-border text-muted-foreground hover:bg-muted'
                         }`}
                       >
@@ -1104,17 +1261,17 @@ export default function POS({ onClose }: POSProps) {
                     </div>
                   </div>
                   
-                  <div className="flex-1 overflow-auto custom-scrollbar">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
                     {tables.length === 0 ? (
                       <div className="flex flex-col items-center justify-center text-center h-full">
-                        <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mb-4">
-                          <Layout className="text-muted-foreground/30" size={40} />
+                        <div className="w-16 h-16 sm:w-20 sm:h-20 bg-muted rounded-full flex items-center justify-center mb-4">
+                          <Layout className="text-muted-foreground/30" size={32} />
                         </div>
-                        <h3 className="text-xl font-bold text-foreground">No Tables Configured</h3>
-                        <p className="text-muted-foreground max-w-xs mt-2">Please configure your restaurant layout in the Admin Panel's Tables section first.</p>
+                        <h3 className="text-lg sm:text-xl font-bold text-foreground">No Tables Configured</h3>
+                        <p className="text-sm text-muted-foreground max-w-xs mt-2">Please configure your restaurant layout in the Admin Panel's Tables section first.</p>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 pb-4">
                         {tables.map(table => {
                           const isSelectedForMerge = selectedTablesToMerge.some(t => t.id === table.id);
                           return (
@@ -1133,7 +1290,7 @@ export default function POS({ onClose }: POSProps) {
                                   setPosStep('menu');
                                 }
                               }}
-                              className={`aspect-square flex flex-col items-center justify-center transition-all shadow-sm select-none rounded-2xl border-2 ${
+                              className={`aspect-square flex flex-col items-center justify-center transition-all shadow-sm select-none rounded-[1rem] sm:rounded-2xl border-2 ${
                                 table.status === 'occupied' 
                                   ? 'bg-amber-500/10 border-amber-500/20 opacity-60 cursor-not-allowed' 
                                   : isSelectedForMerge
@@ -1141,10 +1298,10 @@ export default function POS({ onClose }: POSProps) {
                                     : 'bg-card border-border hover:border-primary/30 hover:shadow-md'
                               }`}
                             >
-                              <span className={`font-black text-lg ${table.status === 'occupied' ? 'text-amber-500' : isSelectedForMerge ? 'text-primary' : 'text-foreground'}`}>
+                              <span className={`font-black text-base sm:text-lg ${table.status === 'occupied' ? 'text-amber-500' : isSelectedForMerge ? 'text-primary' : 'text-foreground'}`}>
                                 {table.name}
                               </span>
-                              <span className={`text-xs font-bold mt-1 ${table.status === 'occupied' ? 'text-amber-500/80' : isSelectedForMerge ? 'text-primary/80' : 'text-muted-foreground'}`}>
+                              <span className={`text-[10px] sm:text-xs font-bold mt-1 ${table.status === 'occupied' ? 'text-amber-500/80' : isSelectedForMerge ? 'text-primary/80' : 'text-muted-foreground'}`}>
                                 Cap: {table.capacity}
                               </span>
                             </button>
@@ -1155,14 +1312,14 @@ export default function POS({ onClose }: POSProps) {
                   </div>
                 </div>
               ) : (
-                <div className="flex-1 flex overflow-hidden">
+                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
                   {/* Left: Menu with Categories */}
-                  <div className="flex-1 flex flex-col overflow-hidden">
-                    <div className="p-4 border-b border-border flex gap-2 overflow-x-auto custom-scrollbar bg-muted/30">
+                  <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                    <div className="p-2 sm:p-3 border-b border-border flex gap-2 overflow-x-auto custom-scrollbar bg-muted/30 shrink-0">
                       <button
                         onClick={() => setSelectedCategory('all')}
-                        className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                          selectedCategory === 'all' ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/20' : 'bg-card text-muted-foreground hover:bg-muted'
+                        className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap shrink-0 ${
+                          selectedCategory === 'all' ? 'bg-primary text-primary-foreground shadow-md shadow-primary/20' : 'bg-card text-muted-foreground hover:bg-muted border border-border'
                         }`}
                       >
                         All Items
@@ -1171,16 +1328,16 @@ export default function POS({ onClose }: POSProps) {
                         <button
                           key={cat.id}
                           onClick={() => setSelectedCategory(cat.id)}
-                          className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                            selectedCategory === cat.id ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/20' : 'bg-card text-muted-foreground hover:bg-muted'
+                          className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap shrink-0 ${
+                            selectedCategory === cat.id ? 'bg-primary text-primary-foreground shadow-md shadow-primary/20' : 'bg-card text-muted-foreground hover:bg-muted border border-border'
                           }`}
                         >
                           {cat.name}
                         </button>
                       ))}
                     </div>
-                    <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    <div className="flex-1 p-3 sm:p-4 overflow-y-auto custom-scrollbar">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 pb-4">
                         {menuItems
                           .filter(item => selectedCategory === 'all' || item.category === selectedCategory)
                           .map(item => (
@@ -1195,31 +1352,36 @@ export default function POS({ onClose }: POSProps) {
                                   return [...prev, { item, quantity: 1 }];
                                 });
                               }}
-                              className="bg-card rounded-2xl border border-border hover:border-primary/30 hover:shadow-xl transition-all text-left flex flex-col overflow-hidden group"
+                              className="bg-card rounded-xl sm:rounded-2xl border border-border hover:border-primary/50 hover:shadow-lg transition-all text-left flex flex-col overflow-hidden group h-full"
                             >
-                              <div className="h-32 w-full bg-muted relative">
+                              <div className="h-20 sm:h-28 w-full bg-muted relative shrink-0">
                                 {item.image ? (
                                   <img src={item.image} alt={item.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-muted-foreground/30">
-                                    <Utensils size={32} />
+                                    <Utensils size={20} className="sm:w-6 sm:h-6" />
                                   </div>
                                 )}
                               </div>
-                              <div className="p-4 flex flex-col justify-between flex-1">
-                                <div>
-                                  <p className="font-bold text-foreground group-hover:text-primary transition-colors line-clamp-2">{item.name}</p>
+                              <div className="p-2 sm:p-3 flex flex-col justify-between flex-1 min-h-0">
+                                <div className="min-h-0 overflow-hidden">
+                                  <p className="font-bold text-xs sm:text-sm text-foreground group-hover:text-primary transition-colors line-clamp-2 leading-tight">{item.name}</p>
                                   {item.recipeDetails?.allergens && item.recipeDetails.allergens.length > 0 && (
-                                    <div className="flex flex-wrap gap-1 mt-2">
-                                      {item.recipeDetails.allergens.map((allergen, idx) => (
-                                        <span key={idx} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded text-[10px] font-bold">
-                                          <AlertTriangle size={10} /> {allergen}
+                                    <div className="flex flex-wrap gap-1 mt-1">
+                                      {item.recipeDetails.allergens.slice(0, 2).map((allergen, idx) => (
+                                        <span key={idx} className="inline-flex items-center gap-0.5 px-1 py-0.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded text-[8px] sm:text-[9px] font-bold whitespace-nowrap">
+                                          <AlertTriangle size={8} className="w-2 h-2" /> {allergen}
                                         </span>
                                       ))}
+                                      {item.recipeDetails.allergens.length > 2 && (
+                                        <span className="inline-flex items-center px-1 py-0.5 bg-muted text-muted-foreground rounded text-[8px] sm:text-[9px] font-bold">
+                                          +{item.recipeDetails.allergens.length - 2}
+                                        </span>
+                                      )}
                                     </div>
                                   )}
                                 </div>
-                                <p className="text-sm font-black text-primary mt-2">{formatCurrency(item.price)}</p>
+                                <p className="text-sm sm:text-base font-black text-primary mt-1 sm:mt-2 shrink-0">{formatCurrency(item.price)}</p>
                               </div>
                             </button>
                           ))}
@@ -1228,8 +1390,8 @@ export default function POS({ onClose }: POSProps) {
                   </div>
 
                   {/* Right: Current Selection */}
-                  <div className="w-96 bg-muted/30 p-8 flex flex-col border-l border-border">
-                    <div className="flex items-center justify-between mb-6">
+                  <div className="w-full md:w-72 lg:w-80 bg-muted/30 p-3 sm:p-4 flex flex-col border-t md:border-t-0 md:border-l border-border shrink-0 h-[40vh] md:h-full">
+                    <div className="flex items-center justify-between mb-3 sm:mb-4 shrink-0">
                       <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Current Order</p>
                       <button 
                         onClick={() => setCurrentOrderItems([])}
@@ -1238,19 +1400,19 @@ export default function POS({ onClose }: POSProps) {
                         Clear All
                       </button>
                     </div>
-                    <div className="flex-1 space-y-4 overflow-y-auto custom-scrollbar pr-2">
+                    <div className="flex-1 space-y-2 sm:space-y-3 overflow-y-auto custom-scrollbar pr-2">
                       {currentOrderItems.map(({ item, quantity }, idx) => (
-                        <div key={idx} className="flex justify-between items-center bg-card p-4 rounded-2xl shadow-sm border border-border">
+                        <div key={idx} className="flex justify-between items-center bg-card p-3 rounded-xl shadow-sm border border-border">
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-bold text-foreground truncate">{item.name}</p>
                             <p className="text-[10px] font-bold text-muted-foreground">{formatCurrency(item.price)} each</p>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
                             <button 
                               onClick={() => {
                                 setCurrentOrderItems(prev => prev.map(i => i.item.id === item.id ? { ...i, quantity: Math.max(0, i.quantity - 1) } : i).filter(i => i.quantity > 0));
                               }}
-                              className="w-8 h-8 bg-muted rounded-xl flex items-center justify-center text-muted-foreground hover:bg-muted/80 transition-all"
+                              className="w-7 h-7 bg-muted rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted/80 transition-all font-bold"
                             >
                               -
                             </button>
@@ -1259,7 +1421,7 @@ export default function POS({ onClose }: POSProps) {
                               onClick={() => {
                                 setCurrentOrderItems(prev => prev.map(i => i.item.id === item.id ? { ...i, quantity: i.quantity + 1 } : i));
                               }}
-                              className="w-8 h-8 bg-muted rounded-xl flex items-center justify-center text-muted-foreground hover:bg-muted/80 transition-all"
+                              className="w-7 h-7 bg-muted rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted/80 transition-all font-bold"
                             >
                               +
                             </button>
@@ -1267,23 +1429,23 @@ export default function POS({ onClose }: POSProps) {
                         </div>
                       ))}
                       {currentOrderItems.length === 0 && (
-                        <div className="h-full flex flex-col items-center justify-center text-muted-foreground/30 gap-4">
-                          <div className="w-16 h-16 bg-card rounded-3xl flex items-center justify-center shadow-sm border border-border">
-                            <ShoppingBag size={32} />
+                        <div className="h-full flex flex-col items-center justify-center text-muted-foreground/30 gap-3">
+                          <div className="w-12 h-12 bg-card rounded-2xl flex items-center justify-center shadow-sm border border-border">
+                            <ShoppingBag size={24} />
                           </div>
-                          <p className="text-xs font-bold uppercase tracking-widest">Empty Cart</p>
+                          <p className="text-[10px] font-bold uppercase tracking-widest">Empty Cart</p>
                         </div>
                       )}
                     </div>
 
-                    <div className="pt-6 mt-6 border-t border-border space-y-4">
+                    <div className="pt-3 sm:pt-4 mt-3 sm:mt-4 border-t border-border space-y-2 sm:space-y-3 shrink-0">
                       {orderTypeInput === 'delivery' && (
                         <div className="space-y-1">
                           <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Assign Driver</label>
                           <select
                             value={driverIdInput}
                             onChange={(e) => setDriverIdInput(e.target.value)}
-                            className="w-full bg-card border border-border rounded-xl p-3 text-sm focus:border-primary outline-none font-bold text-foreground"
+                            className="w-full bg-card border border-border rounded-xl p-2 text-sm focus:border-primary outline-none font-bold text-foreground"
                           >
                             <option value="">Select Driver</option>
                             {drivers.map(d => (
@@ -1292,22 +1454,45 @@ export default function POS({ onClose }: POSProps) {
                           </select>
                         </div>
                       )}
+                      {(orderTypeInput === 'pickup' || orderTypeInput === 'delivery') && (
+                        <div className="space-y-2">
+                          <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Payment Method</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              onClick={() => setNewOrderPaymentMethod('cash')}
+                              className={`py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border-2 ${
+                                newOrderPaymentMethod === 'cash' ? 'bg-emerald-500/10 border-emerald-500 text-emerald-500' : 'bg-card border-border text-muted-foreground hover:border-muted'
+                              }`}
+                            >
+                              Cash
+                            </button>
+                            <button
+                              onClick={() => setNewOrderPaymentMethod('online')}
+                              className={`py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border-2 ${
+                                newOrderPaymentMethod === 'online' ? 'bg-blue-500/10 border-blue-500 text-blue-500' : 'bg-card border-border text-muted-foreground hover:border-muted'
+                              }`}
+                            >
+                              Online
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <textarea
                         value={noteInput}
                         onChange={(e) => setNoteInput(e.target.value)}
-                        placeholder="Add order notes (e.g. allergies, special requests)..."
-                        className="w-full bg-card border border-border rounded-xl p-3 text-sm focus:border-primary outline-none resize-none h-20 text-foreground"
+                        placeholder="Add order notes..."
+                        className="w-full bg-card border border-border rounded-xl p-2 text-sm focus:border-primary outline-none resize-none h-12 sm:h-16 text-foreground"
                       />
-                      <div className="flex justify-between items-center mb-6">
-                        <span className="text-xs font-bold text-muted-foreground uppercase">Total Amount</span>
-                        <span className="text-3xl font-black text-primary">
+                      <div className="flex justify-between items-center mb-2 sm:mb-3">
+                        <span className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase">Total Amount</span>
+                        <span className="text-xl sm:text-2xl font-black text-primary">
                           {formatCurrency(currentOrderItems.reduce((sum, { item, quantity }) => sum + (item.price * quantity), 0))}
                         </span>
                       </div>
                       <button
                         disabled={(orderTypeInput === 'dine-in' && !selectedTable) || currentOrderItems.length === 0 || isSubmitting}
                         onClick={saveOrder}
-                        className="w-full bg-primary text-primary-foreground py-5 rounded-[1.5rem] font-black uppercase tracking-widest shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
+                        className="w-full bg-primary text-primary-foreground py-3 sm:py-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-2 text-sm"
                       >
                         {isSubmitting ? (
                           <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin" />
@@ -1540,7 +1725,7 @@ export default function POS({ onClose }: POSProps) {
                     <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Change to Return</label>
                     <div className="bg-emerald-500/10 border-2 border-emerald-500/20 rounded-[1.5rem] px-6 py-4">
                       <p className="text-2xl font-black text-emerald-500">
-                        {amountReceived ? formatCurrency(Math.max(0, parseFloat(amountReceived) * 100 - (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 || 0 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total))) : formatCurrency(0)}
+                        {amountReceived ? formatCurrency(Math.max(0, parseFloat(amountReceived) * 100 - getAmountToPay())) : formatCurrency(0)}
                       </p>
                     </div>
                   </div>
@@ -1580,7 +1765,7 @@ export default function POS({ onClose }: POSProps) {
                     <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block">Change to Return</label>
                     <div className="bg-emerald-500/10 border-2 border-emerald-500/20 rounded-[1.5rem] px-6 py-4">
                       <p className="text-2xl font-black text-emerald-500">
-                        {formatCurrency(Math.max(0, ((parseFloat(multiPayment.cash) || 0) + (parseFloat(multiPayment.card) || 0)) * 100 - (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 || 0 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total)))}
+                        {formatCurrency(Math.max(0, ((parseFloat(multiPayment.cash) || 0) + (parseFloat(multiPayment.card) || 0)) * 100 - getAmountToPay()))}
                       </p>
                     </div>
                   </div>
@@ -1592,13 +1777,7 @@ export default function POS({ onClose }: POSProps) {
                 <div>
                   <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Total to Pay</p>
                   <p className="text-4xl font-black text-primary">
-                    {isSplitByItem 
-                      ? formatCurrency(selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0))
-                      : isSplitByAmount
-                        ? formatCurrency(parseFloat(splitAmount) * 100 || 0)
-                        : isSplitBill 
-                          ? formatCurrency(settlingOrder.total / numberOfSplits) 
-                          : formatCurrency(settlingOrder.total)}
+                    {formatCurrency(getAmountToPay())}
                     {isSplitBill && !isSplitByItem && !isSplitByAmount && <span className="text-sm text-muted-foreground ml-2 font-bold">per person</span>}
                     {isSplitByItem && <span className="text-sm text-muted-foreground ml-2 font-bold">selected items</span>}
                     {isSplitByAmount && <span className="text-sm text-muted-foreground ml-2 font-bold">custom amount</span>}
@@ -1623,7 +1802,7 @@ export default function POS({ onClose }: POSProps) {
                     disabled={
                       (isSplitByItem && selectedSplitItems.length === 0) ||
                       (isSplitByAmount && (!splitAmount || parseFloat(splitAmount) <= 0)) ||
-                      (paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < (isSplitByItem ? selectedSplitItems.reduce((sum, i) => sum + (i.price * i.quantity), 0) : isSplitByAmount ? parseFloat(splitAmount) * 100 : isSplitBill ? settlingOrder.total / numberOfSplits : settlingOrder.total))) || 
+                      (paymentMethod === 'cash' && (!amountReceived || parseFloat(amountReceived) * 100 < getAmountToPay())) || 
                       isSubmitting
                     }
                     className="bg-primary text-primary-foreground px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl shadow-primary/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
@@ -1654,11 +1833,11 @@ export default function POS({ onClose }: POSProps) {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
             {filteredOrders.map(order => (
-              <div key={order.id} className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all relative">
+              <div key={order.id} className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all relative h-[340px]">
                 {/* Header */}
-                <div className="p-4 bg-muted/30 border-b border-border flex items-center justify-between">
+                <div className="p-3 bg-muted/30 border-b border-border flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
                     <div className={`text-white p-1.5 rounded-lg ${order.orderType === 'dine-in' ? 'bg-emerald-500' : 'bg-blue-500'}`}>
                       {order.orderType === 'dine-in' ? <Utensils size={14} /> : <ShoppingBag size={14} />}
@@ -1718,7 +1897,8 @@ export default function POS({ onClose }: POSProps) {
                         }
                       },
                       { icon: Maximize2, label: 'Maximize', onClick: () => { setActiveOrder(order); setIsMaximizeModalOpen(true); setOpenDropdownId(null); } },
-                      { icon: Printer, label: 'Print', onClick: () => { printBill(order); setOpenDropdownId(null); } },
+                      { icon: Printer, label: 'Print Bill', onClick: () => { printBill(order); setOpenDropdownId(null); } },
+                      { icon: ChefHat, label: 'Reprint KOT', onClick: () => { printKOT(order, true); setOpenDropdownId(null); } },
                     ].map((action, idx) => (
                       <button 
                         key={idx}
@@ -1795,7 +1975,12 @@ export default function POS({ onClose }: POSProps) {
                 <div className="p-2 grid grid-cols-2 gap-2 bg-muted/30 border-t border-border">
                   {order.status !== 'finalized' ? (
                     <button 
-                      onClick={() => updateOrderStatus(order.id, 'cancelled')}
+                      onClick={() => {
+                        setClearanceCallback(() => () => {
+                          updateOrderStatus(order.id, 'cancelled');
+                        });
+                        setIsClearanceModalOpen(true);
+                      }}
                       className="flex flex-col items-center gap-1 bg-red-600 text-white py-2 rounded-xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
                     >
                       <Ban size={16} />
@@ -2135,6 +2320,73 @@ export default function POS({ onClose }: POSProps) {
                   </div>
                 </div>
               ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Clearance Modal */}
+      {isClearanceModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-md rounded-[2.5rem] border border-border shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-8 space-y-6">
+              <div className="text-center space-y-2">
+                <div className="w-16 h-16 bg-primary/10 text-primary rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <ShieldCheck size={32} />
+                </div>
+                <h3 className="text-xl font-black text-foreground uppercase tracking-tight">Manager Clearance</h3>
+                <p className="text-sm text-muted-foreground font-medium">Enter clearance code to proceed</p>
+              </div>
+
+              <div className="space-y-4">
+                <input
+                  type="password"
+                  autoFocus
+                  value={clearanceCodeInput}
+                  onChange={(e) => setClearanceCodeInput(e.target.value)}
+                  placeholder="••••"
+                  className="w-full bg-muted/50 border-2 border-border rounded-2xl px-6 py-4 text-center text-3xl font-black tracking-[1em] focus:border-primary outline-none transition-all"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      if (clearanceCodeInput === '1234') {
+                        clearanceCallback?.();
+                        setIsClearanceModalOpen(false);
+                        setClearanceCodeInput('');
+                        setClearanceCallback(null);
+                      } else {
+                        alert("Invalid Clearance Code");
+                      }
+                    }
+                  }}
+                />
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      setIsClearanceModalOpen(false);
+                      setClearanceCodeInput('');
+                      setClearanceCallback(null);
+                    }}
+                    className="py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-muted-foreground hover:bg-muted transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (clearanceCodeInput === '1234') {
+                        clearanceCallback?.();
+                        setIsClearanceModalOpen(false);
+                        setClearanceCodeInput('');
+                        setClearanceCallback(null);
+                      } else {
+                        alert("Invalid Clearance Code");
+                      }
+                    }}
+                    className="py-4 bg-primary text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+                  >
+                    Confirm
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

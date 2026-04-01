@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy, writeBatch } from 'firebase/firestore';
 import { Table } from '../types';
-import { Plus, Trash2, Save, Move, Square, Circle } from 'lucide-react';
+import { Plus, Trash2, Save, Move, Square, Circle, RotateCcw } from 'lucide-react';
 
 export default function TableDesigner() {
   const [tables, setTables] = useState<Table[]>([]);
@@ -48,6 +48,19 @@ export default function TableDesigner() {
       if (selectedTable?.id === id) setSelectedTable(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `tables/${id}`);
+    }
+  };
+
+  const resetAllTables = async () => {
+    try {
+      const batch = writeBatch(db);
+      tables.forEach(table => {
+        const tableRef = doc(db, 'tables', table.id);
+        batch.update(tableRef, { status: 'available', currentOrderId: null });
+      });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'tables/reset-all');
     }
   };
 
@@ -133,12 +146,21 @@ export default function TableDesigner() {
 
       {/* Sidebar Controls */}
       <div className="w-80 space-y-6">
-        <button
-          onClick={addTable}
-          className="w-full bg-primary text-white py-4 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 shadow-xl shadow-primary/20 hover:scale-[1.02] transition-all"
-        >
-          <Plus size={20} /> Add Table
-        </button>
+        <div className="grid grid-cols-1 gap-3">
+          <button
+            onClick={addTable}
+            className="w-full bg-primary text-white py-4 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 shadow-xl shadow-primary/20 hover:scale-[1.02] transition-all"
+          >
+            <Plus size={20} /> Add Table
+          </button>
+          
+          <button
+            onClick={resetAllTables}
+            className="w-full bg-white border-2 border-zinc-200 text-zinc-600 py-4 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-zinc-50 transition-all"
+          >
+            <RotateCcw size={20} /> Reset All Tables
+          </button>
+        </div>
 
         {selectedTable ? (
           <div className="bg-white p-6 rounded-[2rem] border border-zinc-200 shadow-sm space-y-4">
