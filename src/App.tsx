@@ -463,7 +463,7 @@ export default function App() {
 
             <Route path="/admin/pos" element={
               (!isAdminAuthenticated && !isSuperAdmin) ? <Navigate to="/admin/login" replace /> :
-              <POS onClose={() => navigate('/admin')} isSuperAdmin={isSuperAdmin} />
+              <POS onClose={() => navigate('/admin')} isDeveloper={isSuperAdmin} />
             } />
           </Routes>
         )}

@@ -65,14 +65,70 @@ app.post('/print-kot', (req, res) => {
 
 app.post('/print-bill', (req, res) => {
   const order = req.body;
-  let text = `--- RECEIPT ---\n`;
-  text += `Order #${order.id.slice(-6).toUpperCase()}\n`;
-  text += `Date: ${new Date().toLocaleString()}\n\n`;
+  let text = `--- INVOICE ---\n`;
+  text += `Order #${order.orderNo || order.id.slice(-6).toUpperCase()}\n`;
+  text += `Date: ${new Date().toLocaleString()}\n`;
+  if (order.tableNumber) text += `Table: ${order.tableNumber}\n`;
+  if (order.waiter) text += `Staff: ${order.waiter}\n`;
+  text += `----------------\n\n`;
   
+  let subtotal = 0;
   order.items.forEach(item => {
-    text += `${item.quantity}x ${item.name} - $${(item.price * item.quantity / 100).toFixed(2)}\n`;
+    const itemTotal = item.price * item.quantity;
+    subtotal += itemTotal;
+    text += `${item.quantity}x ${item.name}\n`;
+    text += `   @ AED ${(item.price / 100).toFixed(2)} = AED ${(itemTotal / 100).toFixed(2)}\n`;
   });
-  text += `\nTotal: $${(order.total / 100).toFixed(2)}\n`;
+
+  text += `\n----------------\n`;
+  text += `SUBTOTAL:  AED ${(subtotal / 100).toFixed(2)}\n`;
+  
+  if (order.discount) {
+    const disc = order.discountType === 'percentage' 
+      ? (subtotal * order.discount / 100) 
+      : (order.discount * 100);
+    text += `DISCOUNT: -AED ${(disc / 100).toFixed(2)}\n`;
+  }
+
+  // Tax calculation (dynamic based on total if not stored)
+  const total = order.total || 0;
+  const taxAmount = order.taxAmount || Math.round(total - (total / 1.05)); // Default 5% VAT if not specified
+  
+  if (taxAmount > 0) {
+    text += `VAT (5%):  AED ${(taxAmount / 100).toFixed(2)}\n`;
+  }
+
+  text += `TOTAL:     AED ${(total / 100).toFixed(2)}\n`;
+  text += `----------------\n`;
+
+  // Only show settlement info if the order is finalized or paid
+  const isSettled = order.status === 'finalized' || order.status === 'paid';
+  
+  if (isSettled && order.paymentMethod) {
+    const methodStr = order.paymentMethod.toUpperCase() === 'MULTI' ? 'MULTI-PAYMENT' : order.paymentMethod.toUpperCase();
+    text += `SETTLED VIA: ${methodStr}\n`;
+    
+    if (Array.isArray(order.payments) && order.payments.length > 0) {
+      order.payments.forEach(p => {
+        if (p.method === 'multi' || (p.cashAmount && p.cardAmount)) {
+          if (p.cashAmount) text += `  - CASH: AED ${(p.cashAmount / 100).toFixed(2)}\n`;
+          if (p.cardAmount) text += `  - CARD: AED ${(p.cardAmount / 100).toFixed(2)}\n`;
+        } else {
+          text += `  - ${p.method.toUpperCase()}: AED ${(p.amount / 100).toFixed(2)}\n`;
+        }
+      });
+    }
+
+    if (order.amountReceived) {
+      text += `RECEIVED: AED ${(order.amountReceived / 100).toFixed(2)}\n`;
+    }
+    if (order.changeGiven) {
+      text += `CHANGE:   AED ${(order.changeGiven / 100).toFixed(2)}\n`;
+    }
+    text += `----------------\n`;
+  }
+
+  text += `   THANK YOU!\n`;
   text += `----------------\n`;
 
   // Print to the configured Bill printer

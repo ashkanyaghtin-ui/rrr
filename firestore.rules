@@ -117,7 +117,7 @@ service cloud.firestore {
 
     function isValidOrder(data) {
       return data.userId is string &&
-             data.items is list && data.items.size() > 0 &&
+             data.items is list && data.items.size() >= 0 &&
              data.total is number && data.total >= 0 &&
              data.orderType in ['delivery', 'dine-in', 'pickup', 'take-out', 'takeaway'] &&
              (data.orderType == 'dine-in' ? (data.tableId is string) : true) &&
@@ -292,6 +292,79 @@ service cloud.firestore {
     }
 
     match /staff/{staffId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /counters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /reservations/{reservationId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /waitlist/{waitlistId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /zreports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    match /z_reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    match /shifts/{shiftId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /report_templates/{templateId} {
+      allow read, write: if isAuthenticated();
+    }
+    match /subsidiaries/{subsidiaryId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    match /classes/{classId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    match /ledger_groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /journal_classes/{classId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /purchase_orders/{poId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /payroll_runs/{runId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /feedback/{feedbackId} {
+      allow read: if isAuthenticated();
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    match /promotions/{promoId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
     }

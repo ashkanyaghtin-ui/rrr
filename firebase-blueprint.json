@@ -171,6 +171,39 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "email", "role"]
+    },
+    "ReportTemplate": {
+      "title": "Report Design Template",
+      "description": "Saved report configurations including filters and view settings.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "reportType": { "type": "string" },
+        "filters": { "type": "object" },
+        "viewType": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "reportType", "filters", "viewType"]
+    },
+    "Subsidiary": {
+      "title": "Subsidiary",
+      "description": "A business subsidiary or branch.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "Class": {
+      "title": "Accounting Class",
+      "description": "A classification for accounting entries (e.g., Department, Project).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["name"]
     }
   },
   "firestore": {
@@ -209,6 +242,18 @@
     "staff/{staffId}": {
       "schema": "Staff",
       "description": "Staff members."
+    },
+    "report_templates/{templateId}": {
+      "schema": "ReportTemplate",
+      "description": "Saved report designs."
+    },
+    "subsidiaries/{subsidiaryId}": {
+      "schema": "Subsidiary",
+      "description": "Business subsidiaries."
+    },
+    "classes/{classId}": {
+      "schema": "Class",
+      "description": "Accounting classes."
     }
   }
 }

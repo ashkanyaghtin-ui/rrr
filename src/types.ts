@@ -89,6 +89,15 @@ export interface Order {
     apartment: string;
     phone: string;
   };
+  completedAt?: any;
+  payments?: {
+    method: string;
+    amount: number;
+    timestamp: string;
+    cashAmount?: number;
+    cardAmount?: number;
+    onlineAmount?: number;
+  }[];
 }
 
 export interface InventoryItem {
@@ -97,8 +106,10 @@ export interface InventoryItem {
   stock: number;
   unit: string;
   costPerUnit?: number;
+  averageCost?: number;
   lowStockThreshold: number;
   lastUpdated: any;
+  category?: 'raw_material' | 'finished_good';
 }
 
 export interface Customer {
@@ -203,4 +214,49 @@ export interface LedgerGroup {
   parentGroupId?: string;
   isAccount: boolean; // If true, it's a ledger account, otherwise it's a group
   description?: string;
+}
+
+export interface Reservation {
+  id: string;
+  date: string;
+  time: string;
+  guests: number;
+  status: 'pending' | 'confirmed' | 'seated' | 'completed' | 'cancelled' | 'no-show';
+  source: 'phone' | 'walk-in' | 'online' | 'app';
+  customerName: string;
+  customerPhone: string;
+  customerId?: string;
+  email?: string;
+  tableNumber?: string;
+  tableId?: string;
+  occasion?: string;
+  notes?: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  guests: number;
+  quotedTime: number; // in minutes
+  status: 'waiting' | 'seated' | 'cancelled' | 'no-show';
+  notes?: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface Shift {
+  id: string;
+  staffId: string;
+  staffName: string;
+  date: string;
+  startTime?: string;
+  endTime?: string;
+  status: string;
+  hoursWorked?: number;
+  clockIn?: any;
+  clockOut?: any;
+  notes?: string;
 }

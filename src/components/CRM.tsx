@@ -2,11 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
 import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, where } from 'firebase/firestore';
 import { Customer, CustomerGroup, Order } from '../types';
-import { Users, Plus, Edit2, Trash2, Save, X, Search, MapPin, CreditCard, Tag, FileText, CheckCircle2, Download } from 'lucide-react';
+import { Users, Plus, Edit2, Trash2, Save, X, Search, MapPin, CreditCard, Tag, FileText, CheckCircle2, Download, FileSpreadsheet, Upload } from 'lucide-react';
 import { formatCurrency } from '../utils/format';
 import { exportToExcel } from '../utils/excel';
+import * as XLSX from 'xlsx';
+import { serverTimestamp } from 'firebase/firestore';
 
-export default function CRM() {
+export default function CRM({ systemSettings }: { systemSettings?: any }) {
+  const currencySymbol = systemSettings?.currency || 'AED';
+  
+  const formatCurrency = (amount: number) => {
+    return `${currencySymbol} ${(amount / 100).toFixed(2)}`;
+  };
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [groups, setGroups] = useState<CustomerGroup[]>([]);
   const [activeTab, setActiveTab] = useState<'customers' | 'groups'>('customers');
@@ -77,7 +84,16 @@ export default function CRM() {
       if (editingCustomerId) {
         await updateDoc(doc(db, 'customers', editingCustomerId), customerForm);
       } else {
-        await addDoc(collection(db, 'customers'), customerForm);
+        const custDoc = await addDoc(collection(db, 'customers'), customerForm);
+        // Auto-create Accounts Receivable ledger mapping
+        await addDoc(collection(db, 'ledger_groups'), {
+          code: `1103-${custDoc.id.slice(0,4).toUpperCase()}`,
+          name: `AR - ${customerForm.name}`,
+          type: 'Asset',
+          parentCode: '1103',
+          isAccount: true,
+          description: `Accounts Receivable for ${customerForm.name}`
+        });
       }
       setIsAddingCustomer(false);
       setEditingCustomerId(null);
@@ -131,31 +147,103 @@ export default function CRM() {
     }
   };
 
+  const downloadCustomerTemplate = () => {
+    const data = [{
+      Name: 'John Doe',
+      Phone: '+971501234567',
+      Email: 'john@example.com',
+      Group: 'VIP',
+      Balance: 0,
+      LoyaltyPoints: 100
+    }];
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Template");
+    XLSX.writeFile(wb, "customer_import_template.xlsx");
+  };
+
+  const handleBulkImportCustomers = async (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const data = new Uint8Array(e.target?.result as ArrayBuffer);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+      try {
+        let importedCount = 0;
+        for (const row of jsonData as any[]) {
+          if (!row.Name || !row.Phone) continue;
+
+          // Check if customer already exists (simple phone check)
+          const existing = customers.find(c => c.phone === String(row.Phone));
+          if (existing) continue;
+
+          // Find group ID if specified
+          let groupId = '';
+          if (row.Group) {
+            const group = groups.find(g => g.name.toLowerCase() === String(row.Group).toLowerCase());
+            if (group) groupId = group.id;
+          }
+
+          const customerData = {
+            name: row.Name,
+            phone: String(row.Phone),
+            email: row.Email || '',
+            balance: Number(row.Balance) || 0,
+            loyaltyPoints: Number(row.LoyaltyPoints) || 0,
+            groupId: groupId,
+            addresses: [],
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          };
+
+          const custDoc = await addDoc(collection(db, 'customers'), customerData);
+          
+          // Auto-create AR ledger
+          await addDoc(collection(db, 'ledger_groups'), {
+            code: `1103-${custDoc.id.slice(0,4).toUpperCase()}`,
+            name: `AR - ${customerData.name}`,
+            type: 'Asset',
+            parentCode: '1103',
+            isAccount: true,
+            description: `Accounts Receivable for ${customerData.name}`
+          });
+          
+          importedCount++;
+        }
+        alert(`Successfully imported ${importedCount} customers!`);
+      } catch (err) {
+        console.error("Bulk import failed:", err);
+        alert("Failed to import customers. Please check the file format.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   const filteredCustomers = customers.filter(c => 
     c.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
     c.phone.includes(searchQuery)
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-black text-zinc-900">CRM</h2>
-        <div className="flex gap-2">
-          <button
-            onClick={() => exportToExcel(activeTab === 'customers' ? customers : groups, activeTab === 'customers' ? 'Customers' : 'Customer_Groups')}
-            className="flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-zinc-50 transition-all mr-2"
-          >
-            <Download size={14} /> Export
-          </button>
+    <div className="space-y-8 pb-20">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <div>
+          <h2 className="text-4xl font-black text-foreground tracking-tight">CRM</h2>
+          <p className="text-muted-foreground font-medium mt-1">Manage your customer relationships and loyalty programs.</p>
+        </div>
+        <div className="flex bg-muted/30 p-1.5 rounded-2xl border border-border backdrop-blur-md">
           <button
             onClick={() => setActiveTab('customers')}
-            className={`px-4 py-2 rounded-xl font-bold transition-all ${activeTab === 'customers' ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'}`}
+            className={`px-6 py-2.5 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all ${activeTab === 'customers' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-muted-foreground hover:text-foreground hover:bg-background'}`}
           >
             Customers
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`px-4 py-2 rounded-xl font-bold transition-all ${activeTab === 'groups' ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'}`}
+            className={`px-6 py-2.5 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all ${activeTab === 'groups' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-muted-foreground hover:text-foreground hover:bg-background'}`}
           >
             Groups & Loyalty
           </button>
@@ -163,227 +251,295 @@ export default function CRM() {
       </div>
 
       {activeTab === 'customers' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <div className="relative w-96">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
+        <div className="space-y-8">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-card/30 p-4 rounded-[2rem] border border-border">
+            <div className="relative w-full md:w-96">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" size={20} />
               <input
                 type="text"
                 placeholder="Search customers by name or phone..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary font-medium"
+                className="w-full pl-12 pr-4 py-3 bg-background border border-border rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary font-bold shadow-sm transition-all"
               />
             </div>
-            <button
-              onClick={() => {
-                setIsAddingCustomer(true);
-                setEditingCustomerId(null);
-                setCustomerForm({ name: '', phone: '', email: '', addresses: [], balance: 0, loyaltyPoints: 0, groupId: '' });
-              }}
-              className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-zinc-800 transition-colors"
-            >
-              <Plus size={20} />
-              Add Customer
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={downloadCustomerTemplate}
+                className="flex items-center gap-2 bg-card border border-border text-muted-foreground px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-background transition-all shadow-sm"
+              >
+                <FileSpreadsheet size={16} className="text-emerald-500" />
+                Template
+              </button>
+              <label className="flex items-center gap-2 bg-card border border-border text-muted-foreground px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-background transition-all cursor-pointer shadow-sm">
+                <Upload size={16} className="text-primary" />
+                Bulk Import
+                <input 
+                  type="file" 
+                  className="hidden" 
+                  accept=".xlsx,.xls" 
+                  onChange={(e) => e.target.files?.[0] && handleBulkImportCustomers(e.target.files[0])} 
+                />
+              </label>
+              <button
+                onClick={() => {
+                  setIsAddingCustomer(true);
+                  setEditingCustomerId(null);
+                  setCustomerForm({ name: '', phone: '', email: '', addresses: [], balance: 0, loyaltyPoints: 0, groupId: '' });
+                }}
+                className="flex items-center gap-2 bg-primary text-white px-8 py-3 rounded-2xl font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-xl shadow-primary/20"
+              >
+                <Plus size={20} />
+                Add Customer
+              </button>
+            </div>
           </div>
 
           {(isAddingCustomer || editingCustomerId) && (
-            <div className="bg-zinc-50 p-6 rounded-2xl border border-zinc-200 space-y-4">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-bold">{editingCustomerId ? 'Edit Customer' : 'New Customer'}</h3>
-                <button onClick={() => { setIsAddingCustomer(false); setEditingCustomerId(null); }} className="p-2 hover:bg-zinc-200 rounded-full">
-                  <X size={20} />
+            <div className="bg-card/50 backdrop-blur-xl p-8 rounded-[2.5rem] border border-border shadow-2xl space-y-8 animate-in fade-in slide-in-from-top-4 duration-500">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="text-2xl font-black text-foreground tracking-tight">{editingCustomerId ? 'Edit Customer' : 'Add New Customer'}</h3>
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mt-1">Required information *</p>
+                </div>
+                <button onClick={() => { setIsAddingCustomer(false); setEditingCustomerId(null); }} className="p-3 hover:bg-muted rounded-full transition-all text-muted-foreground hover:text-foreground">
+                  <X size={24} />
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Name</label>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Full Name *</label>
                   <input
                     type="text"
                     value={customerForm.name}
                     onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold"
+                    placeholder="Enter customer name"
+                    required
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Phone</label>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Phone Number *</label>
                   <input
                     type="text"
                     value={customerForm.phone}
                     onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold"
+                    placeholder="+971 50 123 4567"
+                    required
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Email</label>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Email Address</label>
                   <input
                     type="email"
                     value={customerForm.email}
                     onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold"
+                    placeholder="customer@example.com"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Group</label>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Customer Group</label>
                   <select
                     value={customerForm.groupId}
                     onChange={(e) => setCustomerForm({ ...customerForm, groupId: e.target.value })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold appearance-none cursor-pointer"
                   >
-                    <option value="">None</option>
+                    <option value="">No Special Group</option>
                     {groups.map(g => (
-                      <option key={g.id} value={g.id}>{g.name}</option>
+                      <option key={g.id} value={g.id}>{g.name} ({g.discountPercentage}% Discount)</option>
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Balance</label>
-                  <input
-                    type="number"
-                    value={customerForm.balance}
-                    onChange={(e) => setCustomerForm({ ...customerForm, balance: Number(e.target.value) })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
-                  />
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Opening Balance</label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 font-bold text-muted-foreground">{currencySymbol}</span>
+                    <input
+                      type="number"
+                      value={customerForm.balance}
+                      onChange={(e) => setCustomerForm({ ...customerForm, balance: Number(e.target.value) })}
+                      className="w-full pl-14 pr-4 py-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Loyalty Points</label>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Loyalty Points</label>
                   <input
                     type="number"
                     value={customerForm.loyaltyPoints}
                     onChange={(e) => setCustomerForm({ ...customerForm, loyaltyPoints: Number(e.target.value) })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold"
                   />
                 </div>
               </div>
               
               {/* Addresses Section */}
-              <div className="mt-6">
-                <div className="flex justify-between items-center mb-2">
-                  <label className="block text-sm font-bold text-zinc-500">Addresses</label>
+              <div className="space-y-6 bg-muted/20 p-8 rounded-3xl border border-border">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
+                      <MapPin size={20} />
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-black text-foreground tracking-tight">Saved Addresses</h4>
+                      <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mt-0.5">Delivery locations</p>
+                    </div>
+                  </div>
                   <button
                     onClick={() => {
                       setCustomerForm({
                         ...customerForm,
-                        addresses: [...(customerForm.addresses || []), { id: Date.now().toString(), label: 'New Address', street: '', city: '', building: '', apartment: '', phone: '' }]
+                        addresses: [...(customerForm.addresses || []), { id: Date.now().toString(), label: 'New Address', street: '', city: '', building: '', apartment: '', phone: customerForm.phone || '' }]
                       });
                     }}
-                    className="text-sm font-bold text-primary flex items-center gap-1"
+                    className="flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-primary/20 transition-all border border-primary/20"
                   >
-                    <Plus size={16} /> Add Address
+                    <Plus size={14} /> Add Address
                   </button>
                 </div>
-                <div className="space-y-3">
-                  {(customerForm.addresses || []).map((addr, idx) => (
-                    <div key={addr.id} className="p-4 bg-white border border-zinc-200 rounded-xl flex gap-4 items-start">
-                      <div className="flex-1 grid grid-cols-2 gap-3">
-                        <input
-                          type="text"
-                          placeholder="Label (e.g., Home)"
-                          value={addr.label}
-                          onChange={(e) => {
-                            const newAddresses = [...(customerForm.addresses || [])];
-                            newAddresses[idx].label = e.target.value;
-                            setCustomerForm({ ...customerForm, addresses: newAddresses });
-                          }}
-                          className="p-2 border border-zinc-200 rounded-lg text-sm"
-                        />
-                        <input
-                          type="text"
-                          placeholder="Street"
-                          value={addr.street}
-                          onChange={(e) => {
-                            const newAddresses = [...(customerForm.addresses || [])];
-                            newAddresses[idx].street = e.target.value;
-                            setCustomerForm({ ...customerForm, addresses: newAddresses });
-                          }}
-                          className="p-2 border border-zinc-200 rounded-lg text-sm"
-                        />
-                        <input
-                          type="text"
-                          placeholder="Building"
-                          value={addr.building}
-                          onChange={(e) => {
-                            const newAddresses = [...(customerForm.addresses || [])];
-                            newAddresses[idx].building = e.target.value;
-                            setCustomerForm({ ...customerForm, addresses: newAddresses });
-                          }}
-                          className="p-2 border border-zinc-200 rounded-lg text-sm"
-                        />
-                        <input
-                          type="text"
-                          placeholder="City"
-                          value={addr.city}
-                          onChange={(e) => {
-                            const newAddresses = [...(customerForm.addresses || [])];
-                            newAddresses[idx].city = e.target.value;
-                            setCustomerForm({ ...customerForm, addresses: newAddresses });
-                          }}
-                          className="p-2 border border-zinc-200 rounded-lg text-sm"
-                        />
-                      </div>
-                      <button
-                        onClick={() => {
-                          const newAddresses = [...(customerForm.addresses || [])];
-                          newAddresses.splice(idx, 1);
-                          setCustomerForm({ ...customerForm, addresses: newAddresses });
-                        }}
-                        className="p-2 text-red-500 hover:bg-red-50 rounded-lg"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                
+                <div className="space-y-4">
+                  {(customerForm.addresses || []).length === 0 ? (
+                    <div className="py-12 border-2 border-dashed border-border rounded-[2rem] text-center">
+                      <MapPin size={40} className="mx-auto text-muted-foreground/30 mb-2" />
+                      <p className="text-sm font-bold text-muted-foreground">No addresses added yet</p>
                     </div>
-                  ))}
+                  ) : (
+                    (customerForm.addresses || []).map((addr, idx) => (
+                      <div key={addr.id} className="p-6 bg-background border border-border rounded-[2rem] flex flex-col md:flex-row gap-6 items-start group hover:shadow-xl hover:shadow-primary/5 transition-all">
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 w-full">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Label</label>
+                            <input
+                              type="text"
+                              value={addr.label}
+                              onChange={(e) => {
+                                const newAddresses = [...(customerForm.addresses || [])];
+                                newAddresses[idx].label = e.target.value;
+                                setCustomerForm({ ...customerForm, addresses: newAddresses });
+                              }}
+                              className="w-full p-2.5 bg-muted/30 border border-border rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                              placeholder="e.g. Home"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Phone</label>
+                            <input
+                              type="text"
+                              value={addr.phone}
+                              onChange={(e) => {
+                                const newAddresses = [...(customerForm.addresses || [])];
+                                newAddresses[idx].phone = e.target.value;
+                                setCustomerForm({ ...customerForm, addresses: newAddresses });
+                              }}
+                              className="w-full p-2.5 bg-muted/30 border border-border rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Street</label>
+                            <input
+                              type="text"
+                              value={addr.street}
+                              onChange={(e) => {
+                                const newAddresses = [...(customerForm.addresses || [])];
+                                newAddresses[idx].street = e.target.value;
+                                setCustomerForm({ ...customerForm, addresses: newAddresses });
+                              }}
+                              className="w-full p-2.5 bg-muted/30 border border-border rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Building</label>
+                            <input
+                              type="text"
+                              value={addr.building}
+                              onChange={(e) => {
+                                const newAddresses = [...(customerForm.addresses || [])];
+                                newAddresses[idx].building = e.target.value;
+                                setCustomerForm({ ...customerForm, addresses: newAddresses });
+                              }}
+                              className="w-full p-2.5 bg-muted/30 border border-border rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">City</label>
+                            <input
+                              type="text"
+                              value={addr.city}
+                              onChange={(e) => {
+                                const newAddresses = [...(customerForm.addresses || [])];
+                                newAddresses[idx].city = e.target.value;
+                                setCustomerForm({ ...customerForm, addresses: newAddresses });
+                              }}
+                              className="w-full p-2.5 bg-muted/30 border border-border rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                            />
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const newAddresses = [...(customerForm.addresses || [])];
+                            newAddresses.splice(idx, 1);
+                            setCustomerForm({ ...customerForm, addresses: newAddresses });
+                          }}
+                          className="p-3 text-muted-foreground hover:text-red-500 hover:bg-red-50 rounded-2xl transition-all self-center"
+                        >
+                          <Trash2 size={20} />
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
-              <div className="flex justify-end pt-4">
+              <div className="flex justify-end pt-8 border-t border-border mt-8">
                 <button
                   onClick={handleSaveCustomer}
-                  className="flex items-center gap-2 bg-zinc-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-zinc-800 transition-colors"
+                  className="flex items-center gap-2 bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-xl shadow-primary/20"
                 >
                   <Save size={20} />
-                  Save Customer
+                  Save Customer Profile
                 </button>
               </div>
             </div>
           )}
 
-          <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden">
+          <div className="bg-card border border-border rounded-2xl overflow-hidden">
             <table className="w-full text-left">
-              <thead className="bg-zinc-50 border-b border-zinc-200">
+              <thead className="bg-background border-b border-border">
                 <tr>
-                  <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest">Name</th>
-                  <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest">Contact</th>
-                  <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest">Group</th>
-                  <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest">Balance</th>
-                  <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest">Points</th>
-                  <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-widest text-right">Actions</th>
+                  <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">Name</th>
+                  <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">Contact</th>
+                  <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">Group</th>
+                  <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">Balance</th>
+                  <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">Points</th>
+                  <th className="p-4 text-xs font-bold text-muted-foreground uppercase tracking-widest text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
                 {filteredCustomers.map(customer => (
-                  <tr key={customer.id} className="hover:bg-zinc-50/50 transition-colors">
-                    <td className="p-4 font-bold text-zinc-900">{customer.name}</td>
+                  <tr key={customer.id} className="hover:bg-background/50 transition-colors">
+                    <td className="p-4 font-bold text-foreground">{customer.name}</td>
                     <td className="p-4">
-                      <p className="font-medium text-zinc-900">{customer.phone}</p>
-                      <p className="text-sm text-zinc-500">{customer.email}</p>
+                      <p className="font-medium text-foreground">{customer.phone}</p>
+                      <p className="text-sm text-muted-foreground">{customer.email}</p>
                     </td>
                     <td className="p-4">
                       {customer.groupId ? (
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-zinc-100 text-zinc-600">
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-background text-muted-foreground">
                           {groups.find(g => g.id === customer.groupId)?.name || 'Unknown'}
                         </span>
                       ) : (
-                        <span className="text-zinc-400 text-sm">-</span>
+                        <span className="text-muted-foreground text-sm">-</span>
                       )}
                     </td>
                     <td className="p-4">
-                      <span className={`font-bold ${customer.balance > 0 ? 'text-red-500' : customer.balance < 0 ? 'text-emerald-500' : 'text-zinc-500'}`}>
+                      <span className={`font-bold ${customer.balance > 0 ? 'text-red-500' : customer.balance < 0 ? 'text-emerald-500' : 'text-muted-foreground'}`}>
                         {formatCurrency(customer.balance)}
                       </span>
                     </td>
-                    <td className="p-4 font-bold text-zinc-900">{customer.loyaltyPoints}</td>
+                    <td className="p-4 font-bold text-foreground">{customer.loyaltyPoints}</td>
                     <td className="p-4 text-right">
                       <div className="flex justify-end gap-2">
                         <button
@@ -392,20 +548,20 @@ export default function CRM() {
                             setCustomerForm(customer);
                             setIsAddingCustomer(false);
                           }}
-                          className="p-2 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-xl transition-colors"
+                          className="p-2 text-muted-foreground hover:text-foreground hover:bg-background rounded-xl transition-colors"
                         >
                           <Edit2 size={18} />
                         </button>
                         <button
                           onClick={() => setViewingCustomerId(customer.id)}
-                          className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-colors"
+                          className="p-2 text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-colors"
                           title="View Order History"
                         >
                           <FileText size={18} />
                         </button>
                         <button
                           onClick={() => handleDeleteCustomer(customer.id)}
-                          className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+                          className="p-2 text-muted-foreground hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
                         >
                           <Trash2 size={18} />
                         </button>
@@ -422,47 +578,49 @@ export default function CRM() {
       {/* Order History Modal */}
       {viewingCustomerId && (
         <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-3xl p-8 space-y-6 shadow-2xl max-h-[90vh] flex flex-col">
-            <div className="flex justify-between items-center border-b border-zinc-100 pb-4">
-              <h3 className="text-2xl font-black text-zinc-900 tracking-tight">
+          <div className="bg-card rounded-3xl w-full max-w-3xl p-8 space-y-6 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center border-b border-border pb-4">
+              <h3 className="text-2xl font-black text-foreground tracking-tight">
                 Order History for {customers.find(c => c.id === viewingCustomerId)?.name}
               </h3>
-              <button onClick={() => setViewingCustomerId(null)} className="p-2 hover:bg-zinc-100 rounded-full transition-colors">
-                <X size={24} className="text-zinc-500" />
+              <button onClick={() => setViewingCustomerId(null)} className="p-2 hover:bg-background rounded-full transition-colors">
+                <X size={24} className="text-muted-foreground" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-4">
               {customerOrders.length === 0 ? (
                 <div className="text-center py-12">
                   <CheckCircle2 size={48} className="mx-auto text-emerald-500 mb-4" />
-                  <p className="text-lg font-bold text-zinc-900">No order history</p>
-                  <p className="text-zinc-500">This customer has no orders yet.</p>
+                  <p className="text-lg font-bold text-foreground">No order history</p>
+                  <p className="text-muted-foreground">This customer has no orders yet.</p>
                 </div>
               ) : (
                 customerOrders.map(order => (
-                  <div key={order.id} className="bg-zinc-50 border border-zinc-200 rounded-2xl p-6 space-y-4">
+                  <div key={order.id} className="bg-background border border-border rounded-2xl p-6 space-y-4">
                     <div className="flex justify-between items-start">
                       <div>
-                        <p className="font-black text-lg text-zinc-900">Order #{order.id.slice(-6).toUpperCase()}</p>
-                        <p className="text-sm font-bold text-zinc-500 mt-1">{order.createdAt?.toDate().toLocaleString()}</p>
+                        <p className="font-black text-lg text-foreground">Order #{order.id.slice(-6).toUpperCase()}</p>
+                        <p className="text-sm font-bold text-muted-foreground mt-1">
+                          {order.createdAt?.toDate ? order.createdAt.toDate().toLocaleString() : 'Just now'}
+                        </p>
                         <div className="flex gap-2 mt-3">
                           <span className={`px-2.5 py-1 rounded-lg text-xs font-black uppercase tracking-widest ${order.status === 'finalized' ? 'bg-emerald-100 text-emerald-800' : order.status === 'cancelled' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>{order.status}</span>
-                          <span className="px-2.5 py-1 bg-zinc-200 text-zinc-700 rounded-lg text-xs font-black uppercase tracking-widest">{order.orderType}</span>
+                          <span className="px-2.5 py-1 bg-accent text-foreground rounded-lg text-xs font-black uppercase tracking-widest">{order.orderType}</span>
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1">{order.status === 'finalized' ? 'Total Paid' : 'Total Due'}</p>
-                        <p className={`text-2xl font-black ${order.status === 'finalized' ? 'text-emerald-500' : order.status === 'cancelled' ? 'text-zinc-400 line-through' : 'text-red-500'}`}>{formatCurrency(order.total)}</p>
+                        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1">{order.status === 'finalized' ? 'Total Paid' : 'Total Due'}</p>
+                        <p className={`text-2xl font-black ${order.status === 'finalized' ? 'text-emerald-500' : order.status === 'cancelled' ? 'text-muted-foreground line-through' : 'text-red-500'}`}>{formatCurrency(order.total)}</p>
                       </div>
                     </div>
                     
-                    <div className="border-t border-zinc-200 pt-4">
-                      <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-3">Items</p>
+                    <div className="border-t border-border pt-4">
+                      <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-3">Items</p>
                       <div className="space-y-2">
                         {order.items.map((item, idx) => (
                           <div key={idx} className="flex justify-between text-sm">
-                            <span className="text-zinc-600 font-bold"><span className="text-zinc-400 mr-2">{item.quantity}x</span> {item.name}</span>
-                            <span className="text-zinc-900 font-black">{formatCurrency(item.price * item.quantity)}</span>
+                            <span className="text-muted-foreground font-bold"><span className="text-muted-foreground mr-2">{item.quantity}x</span> {item.name}</span>
+                            <span className="text-foreground font-black">{formatCurrency(item.price * item.quantity)}</span>
                           </div>
                         ))}
                       </div>
@@ -493,39 +651,39 @@ export default function CRM() {
           </div>
 
           {(isAddingGroup || editingGroupId) && (
-            <div className="bg-zinc-50 p-6 rounded-2xl border border-zinc-200 space-y-4">
+            <div className="bg-background p-6 rounded-2xl border border-border space-y-4">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-bold">{editingGroupId ? 'Edit Group' : 'New Group'}</h3>
-                <button onClick={() => { setIsAddingGroup(false); setEditingGroupId(null); }} className="p-2 hover:bg-zinc-200 rounded-full">
+                <button onClick={() => { setIsAddingGroup(false); setEditingGroupId(null); }} className="p-2 hover:bg-accent rounded-full">
                   <X size={20} />
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Group Name</label>
+                  <label className="block text-sm font-bold text-muted-foreground mb-1">Group Name</label>
                   <input
                     type="text"
                     value={groupForm.name}
                     onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-3 bg-card border border-border rounded-xl focus:outline-none focus:border-primary"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Discount Percentage (%)</label>
+                  <label className="block text-sm font-bold text-muted-foreground mb-1">Discount Percentage (%)</label>
                   <input
                     type="number"
                     value={groupForm.discountPercentage}
                     onChange={(e) => setGroupForm({ ...groupForm, discountPercentage: Number(e.target.value) })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-3 bg-card border border-border rounded-xl focus:outline-none focus:border-primary"
                   />
                 </div>
                 <div className="col-span-2">
-                  <label className="block text-sm font-bold text-zinc-500 mb-1">Description</label>
+                  <label className="block text-sm font-bold text-muted-foreground mb-1">Description</label>
                   <input
                     type="text"
                     value={groupForm.description}
                     onChange={(e) => setGroupForm({ ...groupForm, description: e.target.value })}
-                    className="w-full p-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:border-primary"
+                    className="w-full p-3 bg-card border border-border rounded-xl focus:outline-none focus:border-primary"
                   />
                 </div>
               </div>
@@ -543,11 +701,11 @@ export default function CRM() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {groups.map(group => (
-              <div key={group.id} className="bg-white border border-zinc-200 rounded-2xl p-6 space-y-4">
+              <div key={group.id} className="bg-card border border-border rounded-2xl p-6 space-y-4">
                 <div className="flex justify-between items-start">
                   <div>
-                    <h4 className="font-black text-xl text-zinc-900">{group.name}</h4>
-                    {group.description && <p className="text-sm text-zinc-500 mt-1">{group.description}</p>}
+                    <h4 className="font-black text-xl text-foreground">{group.name}</h4>
+                    {group.description && <p className="text-sm text-muted-foreground mt-1">{group.description}</p>}
                   </div>
                   <div className="flex gap-1">
                     <button
@@ -556,13 +714,13 @@ export default function CRM() {
                         setGroupForm(group);
                         setIsAddingGroup(false);
                       }}
-                      className="p-2 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-xl transition-colors"
+                      className="p-2 text-muted-foreground hover:text-foreground hover:bg-background rounded-xl transition-colors"
                     >
                       <Edit2 size={16} />
                     </button>
                     <button
                       onClick={() => handleDeleteGroup(group.id)}
-                      className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+                      className="p-2 text-muted-foreground hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
                     >
                       <Trash2 size={16} />
                     </button>
@@ -572,8 +730,8 @@ export default function CRM() {
                   <Tag size={16} />
                   <span className="font-bold">{group.discountPercentage}% Discount</span>
                 </div>
-                <div className="pt-4 border-t border-zinc-100">
-                  <p className="text-sm font-bold text-zinc-500">
+                <div className="pt-4 border-t border-border">
+                  <p className="text-sm font-bold text-muted-foreground">
                     {customers.filter(c => c.groupId === group.id).length} Customers in group
                   </p>
                 </div>
@@ -585,16 +743,16 @@ export default function CRM() {
 
       {deletingCustomerId && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-8 text-center">
+          <div className="bg-card rounded-[2rem] shadow-2xl w-full max-w-md p-8 text-center">
             <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-6">
               <Trash2 size={32} />
             </div>
-            <h3 className="text-2xl font-bold text-zinc-900 mb-2">Delete Customer?</h3>
-            <p className="text-zinc-500 mb-8">Are you sure you want to delete this customer? This action cannot be undone.</p>
+            <h3 className="text-2xl font-bold text-foreground mb-2">Delete Customer?</h3>
+            <p className="text-muted-foreground mb-8">Are you sure you want to delete this customer? This action cannot be undone.</p>
             <div className="flex gap-4">
               <button
                 onClick={() => setDeletingCustomerId(null)}
-                className="flex-1 py-3 rounded-xl font-bold text-zinc-600 bg-zinc-100 hover:bg-zinc-200 transition-colors"
+                className="flex-1 py-3 rounded-xl font-bold text-muted-foreground bg-background hover:bg-accent transition-colors"
               >
                 Cancel
               </button>
@@ -611,16 +769,16 @@ export default function CRM() {
 
       {deletingGroupId && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-8 text-center">
+          <div className="bg-card rounded-[2rem] shadow-2xl w-full max-w-md p-8 text-center">
             <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-6">
               <Trash2 size={32} />
             </div>
-            <h3 className="text-2xl font-bold text-zinc-900 mb-2">Delete Group?</h3>
-            <p className="text-zinc-500 mb-8">Are you sure you want to delete this group? This action cannot be undone.</p>
+            <h3 className="text-2xl font-bold text-foreground mb-2">Delete Group?</h3>
+            <p className="text-muted-foreground mb-8">Are you sure you want to delete this group? This action cannot be undone.</p>
             <div className="flex gap-4">
               <button
                 onClick={() => setDeletingGroupId(null)}
-                className="flex-1 py-3 rounded-xl font-bold text-zinc-600 bg-zinc-100 hover:bg-zinc-200 transition-colors"
+                className="flex-1 py-3 rounded-xl font-bold text-muted-foreground bg-background hover:bg-accent transition-colors"
               >
                 Cancel
               </button>

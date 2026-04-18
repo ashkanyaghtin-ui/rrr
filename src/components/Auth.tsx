@@ -1,24 +1,45 @@
+import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { LogIn, LogOut, User as UserIcon } from 'lucide-react';
+import { LogIn, LogOut, User as UserIcon, Settings } from 'lucide-react';
+import ProfileModal from './ProfileModal';
+import { AnimatePresence } from 'motion/react';
 
 export default function Auth() {
   const { user, login, logout } = useAuth();
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   if (user) {
     return (
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <UserIcon size={16} />
-          <span>{user.displayName}</span>
+      <>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsProfileOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 hover:bg-muted rounded-2xl transition-all group"
+          >
+            <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
+              <UserIcon size={16} />
+            </div>
+            <div className="text-left hidden sm:flex flex-col justify-center">
+              <p className="text-[11px] font-black text-foreground leading-tight">{user.displayName || 'Account'}</p>
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-[0.1em] mt-0.5">Profile Settings</p>
+            </div>
+          </button>
+          <div className="h-4 w-px bg-border mx-1" />
+          <button
+            onClick={logout}
+            className="p-2 hover:bg-red-50 hover:text-red-600 rounded-xl transition-all text-muted-foreground"
+            title="Logout"
+          >
+            <LogOut size={18} />
+          </button>
         </div>
-        <button
-          onClick={logout}
-          className="p-2 hover:bg-muted rounded-full transition-colors text-muted-foreground"
-          title="Logout"
-        >
-          <LogOut size={20} />
-        </button>
-      </div>
+
+        <AnimatePresence>
+          {isProfileOpen && (
+            <ProfileModal onClose={() => setIsProfileOpen(false)} />
+          )}
+        </AnimatePresence>
+      </>
     );
   }
 
@@ -33,7 +54,7 @@ export default function Auth() {
       </button>
       <button
         onClick={login}
-        className="flex items-center gap-2 px-6 py-2.5 bg-zinc-100 text-zinc-900 rounded-2xl text-sm font-bold hover:bg-zinc-200 transition-all"
+        className="flex items-center gap-2 px-6 py-2.5 bg-muted text-foreground rounded-2xl text-sm font-bold hover:bg-accent transition-all"
       >
         <span>Sign Up</span>
       </button>

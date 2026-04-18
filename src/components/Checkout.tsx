@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, runTransaction, increment } from 'firebase/firestore';
 import { CheckCircle2, MapPin, Phone, Building, Home, Plus, LogIn, X, Banknote, CreditCard } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { CartItem } from '../types';
@@ -75,22 +75,57 @@ export default function Checkout({ amount, cartItems, onSuccess, onClose }: Chec
         };
       }
 
-      // Create the order with full details
-      console.log("Creating order with items:", cartItems);
-      const orderRef = await addDoc(collection(db, 'orders'), {
-        userId: user?.uid || 'guest',
-        customerName: profile?.name || 'Guest',
-        customerPhone: finalAddress.phone,
-        items: cartItems.map(i => ({ itemId: i.id, name: i.name, price: i.price, quantity: i.quantity })),
-        total: amount,
-        orderType: orderType,
-        paymentMethod: paymentMethod,
-        status: paymentMethod === 'online' ? 'paid' : 'confirmed',
-        address: finalAddress,
-        createdAt: serverTimestamp(),
-        paymentIntentId: paymentMethod === 'online' ? 'mock_payment_' + Date.now() : null
+      // Create the order with full details and unified sequential numbering
+      await runTransaction(db, async (transaction) => {
+        // 1. Get next Order Number
+        const counterRef = doc(db, 'counters', 'orders');
+        const counterDoc = await transaction.get(counterRef);
+        let orderNo = 1001;
+        
+        if (!counterDoc.exists()) {
+          transaction.set(counterRef, { current: 1001 });
+        } else {
+          orderNo = (counterDoc.data().current || 1000) + 1;
+          transaction.update(counterRef, { current: orderNo });
+        }
+
+        const todayStr = new Date().toISOString().split('T')[0];
+        const kotCounterRef = doc(db, 'counters', `kots_${todayStr}`);
+        const kotCounterDoc = await transaction.get(kotCounterRef);
+        let kotNoInt = 1;
+        
+        if (!kotCounterDoc.exists()) {
+          transaction.set(kotCounterRef, { current: 1 });
+        } else {
+          kotNoInt = (kotCounterDoc.data().current || 0) + 1;
+          transaction.update(kotCounterRef, { current: kotNoInt });
+        }
+
+        const orderData: any = {
+          userId: user?.uid || 'guest',
+          customerName: profile?.name || 'Guest',
+          customerPhone: finalAddress.phone || null,
+          items: cartItems.map(i => ({ itemId: i.id, name: i.name, price: i.price, quantity: i.quantity })),
+          total: amount,
+          orderType: orderType,
+          paymentMethod: paymentMethod,
+          status: 'awaiting-confirmation',
+          address: finalAddress,
+          orderNo: orderNo.toString(),
+          kotNo: kotNoInt.toString().padStart(3, '0'),
+          createdAt: serverTimestamp(),
+          paymentIntentId: paymentMethod === 'online' ? 'mock_payment_' + Date.now() : null
+        };
+
+        Object.keys(orderData).forEach(key => {
+          if (orderData[key] === undefined) {
+            delete orderData[key];
+          }
+        });
+
+        const newOrderRef = doc(collection(db, 'orders'));
+        transaction.set(newOrderRef, orderData);
       });
-      console.log("Order created successfully:", orderRef.id);
 
       onSuccess();
     } catch (err) {

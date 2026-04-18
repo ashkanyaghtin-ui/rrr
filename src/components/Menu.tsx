@@ -1,8 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { MenuItem, Category } from '../types';
-import { Plus, Minus, ShoppingBag, Clock, AlertTriangle } from 'lucide-react';
+import { Plus, Minus, ShoppingBag, Clock, AlertTriangle, MessageSquare, Star, X, Send } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatCurrency } from '../utils/format';
+import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { db } from '../firebase';
 
 interface MenuProps {
   items: MenuItem[];
@@ -14,6 +16,12 @@ interface MenuProps {
 
 export default function Menu({ items, categories, onAddToCart, cartCount, onOpenCart }: MenuProps) {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackName, setFeedbackName] = useState('');
+  const [feedbackComment, setFeedbackComment] = useState('');
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  
   const isClickScrolling = useRef(false);
   const scrollTimeout = useRef<NodeJS.Timeout | null>(null);
 
@@ -89,6 +97,30 @@ export default function Menu({ items, categories, onAddToCart, cartCount, onOpen
       return `https://lh3.googleusercontent.com/d/${id}`;
     }
     return url;
+  };
+
+  const handleFeedbackSubmit = async () => {
+    if (feedbackRating === 0 || !feedbackName.trim() || !feedbackComment.trim()) return;
+    setIsSubmittingFeedback(true);
+    try {
+      await addDoc(collection(db, 'feedback'), {
+        customerName: feedbackName.trim(),
+        rating: feedbackRating,
+        comment: feedbackComment.trim(),
+        status: 'pending',
+        source: 'online',
+        createdAt: serverTimestamp()
+      });
+      setIsFeedbackOpen(false);
+      setFeedbackRating(0);
+      setFeedbackName('');
+      setFeedbackComment('');
+      alert("Thank you for your feedback!");
+    } catch (error) {
+      console.error("Error submitting feedback", error);
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
   };
 
   return (
@@ -211,6 +243,84 @@ export default function Menu({ items, categories, onAddToCart, cartCount, onOpen
             );
           })}
       </div>
+
+      {/* Floating Feedback Button */}
+      <button 
+        onClick={() => setIsFeedbackOpen(true)}
+        className="fixed bottom-6 left-6 z-40 bg-zinc-900 border border-zinc-700 text-white p-4 rounded-full shadow-2xl hover:scale-110 active:scale-95 transition-all group flex items-center gap-3"
+      >
+        <MessageSquare size={24} className="group-hover:rotate-12 transition-transform" />
+      </button>
+
+      {/* Feedback Popup */}
+      <AnimatePresence>
+        {isFeedbackOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsFeedbackOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative w-full max-w-md bg-card border border-border rounded-[2.5rem] p-8 shadow-2xl overflow-hidden"
+            >
+              <button 
+                onClick={() => setIsFeedbackOpen(false)}
+                className="absolute top-6 right-6 p-2 text-muted-foreground hover:bg-muted rounded-full transition-all"
+              >
+                <X size={20} />
+              </button>
+              
+              <div className="mb-8">
+                <h3 className="text-2xl font-black text-foreground tracking-tight mb-2">How was your visit?</h3>
+                <p className="text-sm font-medium text-muted-foreground">We value your thoughts to improve our services.</p>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex justify-center gap-2">
+                  {[1, 2, 3, 4, 5].map(star => (
+                    <button 
+                      key={star}
+                      onClick={() => setFeedbackRating(star)}
+                      className={`p-2 transition-all hover:scale-110 ${feedbackRating >= star ? 'text-amber-400' : 'text-zinc-200 dark:text-zinc-700'}`}
+                    >
+                      <Star size={36} className={feedbackRating >= star ? 'fill-amber-400' : ''} />
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-4">
+                  <input 
+                    type="text" 
+                    placeholder="Your Name" 
+                    value={feedbackName}
+                    onChange={(e) => setFeedbackName(e.target.value)}
+                    className="w-full p-4 bg-muted/30 border border-border rounded-2xl outline-none focus:ring-2 focus:ring-primary font-medium text-sm transition-all"
+                  />
+                  <textarea 
+                    placeholder="Tell us about your experience..." 
+                    value={feedbackComment}
+                    onChange={(e) => setFeedbackComment(e.target.value)}
+                    className="w-full p-4 bg-muted/30 border border-border rounded-2xl outline-none focus:ring-2 focus:ring-primary font-medium text-sm h-32 resize-none transition-all"
+                  />
+                  <button 
+                    onClick={handleFeedbackSubmit}
+                    disabled={feedbackRating === 0 || !feedbackName.trim() || !feedbackComment.trim() || isSubmittingFeedback}
+                    className="w-full py-4 bg-primary text-white rounded-2xl font-black text-sm uppercase tracking-widest flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-primary/90 transition-all active:scale-[0.98]"
+                  >
+                    <Send size={16} /> {isSubmittingFeedback ? 'Submitting...' : 'Send Feedback'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
