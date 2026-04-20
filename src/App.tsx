@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
-import { collection, query, orderBy, addDoc, serverTimestamp, getDocs, deleteDoc, doc, where } from 'firebase/firestore';
-import { safeOnSnapshot as onSnapshot } from './utils/firestoreSafeSnapshot';
+import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, getDocs, deleteDoc, doc, where, writeBatch } from 'firebase/firestore';
 import { useAuth } from './contexts/AuthContext';
 import { MenuItem, Category, CartItem, Order } from './types';
 import Menu from './components/Menu';
@@ -14,75 +13,15 @@ import AdminLogin from './components/AdminLogin';
 import POS from './components/POS';
 import { INITIAL_CATEGORIES, INITIAL_MENU_ITEMS } from './data/initialMenu';
 import { AnimatePresence, motion } from 'motion/react';
-import { UtensilsCrossed, CheckCircle2, Settings, ShieldCheck, Monitor, AlertCircle, RotateCcw } from 'lucide-react';
+import { UtensilsCrossed, CheckCircle2, Settings, ShieldCheck, Monitor, ShoppingBag, BarChart3, Plus, AlertCircle, RotateCcw } from 'lucide-react';
+import { formatCurrency } from './utils/format';
 
 const DEFAULT_TENANT_ID = 'rivas';
 
-class AppShellErrorBoundary extends React.Component<
-  { children: React.ReactNode; resetKey: string },
-  { hasError: boolean; error: string }
-> {
-  declare props: { children: React.ReactNode; resetKey: string };
-  declare state: { hasError: boolean; error: string };
-  declare setState: React.Component<{ children: React.ReactNode; resetKey: string }, { hasError: boolean; error: string }>['setState'];
-
-  constructor(props: { children: React.ReactNode; resetKey: string }) {
-    super(props);
-    this.state = { hasError: false, error: '' };
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error: error.message };
-  }
-
-  componentDidUpdate(prevProps: Readonly<{ children: React.ReactNode; resetKey: string }>) {
-    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
-      this.setState({ hasError: false, error: '' });
-    }
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen bg-background flex items-center justify-center p-6">
-          <div className="max-w-lg w-full bg-card border border-border rounded-[2rem] shadow-2xl p-8 space-y-4">
-            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-primary">Application Error</p>
-            <h1 className="text-2xl font-black text-foreground uppercase tracking-tight">A module crashed</h1>
-            <p className="text-sm text-muted-foreground font-medium break-words">
-              {this.state.error || 'An unexpected render error occurred.'}
-            </p>
-            <div className="flex flex-wrap gap-3 pt-2">
-              <button
-                onClick={() => this.setState({ hasError: false, error: '' })}
-                className="px-4 py-3 rounded-2xl bg-primary text-white text-xs font-black uppercase tracking-widest"
-              >
-                Retry
-              </button>
-              <button
-                onClick={() => window.location.assign('/')}
-                className="px-4 py-3 rounded-2xl bg-background border border-border text-xs font-black uppercase tracking-widest text-foreground"
-              >
-                Go Home
-              </button>
-              <button
-                onClick={() => window.location.reload()}
-                className="px-4 py-3 rounded-2xl bg-background border border-border text-xs font-black uppercase tracking-widest text-foreground"
-              >
-                Reload
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    return this.props.children;
-  }
-}
-
 function UserApp({ items, categories, tenantId }: { items: MenuItem[], categories: Category[], tenantId: string }) {
   const { user, profile } = useAuth();
-  const isAdmin = profile?.role === 'admin';
+  const isSuperAdmin = user?.email === 'ashkan.yaghtin@gmail.com';
+  const isAdmin = profile?.role === 'admin' || isSuperAdmin;
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
@@ -333,20 +272,39 @@ export default function App() {
   });
   const [currentTenantId, setCurrentTenantId] = useState(DEFAULT_TENANT_ID);
 
-  useEffect(() => {
-    if (sessionStorage.getItem('adminAuthenticated') === 'true') {
-      setIsAdminAuthenticated(true);
-    }
-  }, []);
+  const isSuperAdmin = user?.email === 'ashkan.yaghtin@gmail.com';
 
   useEffect(() => {
-    // If user has a tenantId in their profile, use it.
-    if (profile?.tenantId) {
+    if (isSuperAdmin) {
+      setIsAdminAuthenticated(true);
+      sessionStorage.setItem('adminAuthenticated', 'true');
+    }
+  }, [isSuperAdmin]);
+
+  useEffect(() => {
+    // If user has a tenantId in their profile, use it (unless super admin overrides)
+    if (profile?.tenantId && !isSuperAdmin) {
       setCurrentTenantId(profile.tenantId);
     }
-  }, [profile]);
+  }, [profile, isSuperAdmin]);
 
   useEffect(() => {
+    // One-time table reset as requested by user
+    const resetTables = async () => {
+      try {
+        const tablesSnap = await getDocs(collection(db, 'tables'));
+        const batch = writeBatch(db);
+        tablesSnap.forEach(d => {
+          batch.update(d.ref, { status: 'available' });
+        });
+        await batch.commit();
+        console.log('All tables reset to available');
+      } catch (err) {
+        console.error('Error resetting tables:', err);
+      }
+    };
+    resetTables();
+
     const unsubscribeMenu = onSnapshot(collection(db, 'menu'), (snapshot) => {
       setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MenuItem)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'menu'));
@@ -362,8 +320,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-
     const unsubscribeSettings = onSnapshot(doc(db, 'settings', 'system'), (doc) => {
       if (doc.exists()) {
         const data = doc.data();
@@ -391,12 +347,84 @@ export default function App() {
     }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/system'));
 
     return () => unsubscribeSettings();
-  }, [location.pathname, user]);
+  }, [location.pathname]);
+
+  const [globalStats, setGlobalStats] = useState({ revenue: 0, orders: 0, users: 0 });
+
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    
+    // Global Revenue & Orders
+    const unsubscribeOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
+      const orders = snapshot.docs.map(d => d.data() as Order);
+      const revenue = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+      setGlobalStats(prev => ({ ...prev, revenue, orders: orders.length }));
+    });
+
+    // Global Users
+    const unsubscribeUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      setGlobalStats(prev => ({ ...prev, users: snapshot.docs.length }));
+    });
+
+    return () => {
+      unsubscribeOrders();
+      unsubscribeUsers();
+    };
+  }, [isSuperAdmin]);
 
   return (
     <>
-      <AppShellErrorBoundary resetKey={location.pathname}>
-      <div>
+      {isSuperAdmin && (
+        <div className="fixed top-0 left-0 right-0 z-[100] bg-zinc-900 text-white px-4 py-3 flex items-center justify-between shadow-2xl border-b border-primary/20">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="text-primary" size={20} />
+              <span className="text-sm font-black uppercase tracking-[0.2em] text-primary">Super Admin Console</span>
+            </div>
+            <div className="h-4 w-px bg-zinc-700" />
+            <div className="flex items-center gap-6 text-[10px] uppercase font-bold text-zinc-400">
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                System Online
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Monitor size={12} />
+                {items.length} Menu Items
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ShoppingBag size={12} />
+                {globalStats.orders} Global Orders
+              </div>
+              <div className="flex items-center gap-1.5 text-emerald-400">
+                <BarChart3 size={12} />
+                {formatCurrency(globalStats.revenue)} Revenue
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Plus size={12} />
+                {globalStats.users} Users
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-[10px] font-medium text-zinc-500">Authenticated as: <span className="text-zinc-200">{user?.email}</span></span>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => navigate('/')}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1 rounded-lg transition-all border border-zinc-700"
+              >
+                Storefront
+              </button>
+              <button 
+                onClick={() => navigate('/admin')}
+                className="bg-primary/10 hover:bg-primary/20 text-primary px-3 py-1 rounded-lg transition-all border border-primary/30"
+              >
+                Admin Panel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className={isSuperAdmin ? 'pt-8' : ''}>
         {loading ? (
           <div className="min-h-screen flex items-center justify-center">
             <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
@@ -419,7 +447,7 @@ export default function App() {
             } />
 
             <Route path="/admin" element={
-              isAdminAuthenticated ?
+              (!isAdminAuthenticated && !isSuperAdmin) ? <Navigate to="/admin/login" replace /> :
               <AdminPanel 
                 items={items} 
                 categories={categories} 
@@ -427,25 +455,19 @@ export default function App() {
                 onLogout={() => {
                   setIsAdminAuthenticated(false);
                   sessionStorage.removeItem('adminAuthenticated');
-                  sessionStorage.removeItem('adminRole');
-                  sessionStorage.removeItem('activeStaffDocId');
-                  sessionStorage.removeItem('activeStaffName');
-                  sessionStorage.removeItem('activeStaffEmail');
                   auth.signOut();
                 }}
                 onOpenPOS={() => navigate('/admin/pos')}
-              /> : <Navigate to="/admin/login" replace />
+              />
             } />
 
             <Route path="/admin/pos" element={
-              isAdminAuthenticated
-                ? <POS onClose={() => navigate('/admin')} />
-                : <Navigate to="/admin/login" replace />
+              (!isAdminAuthenticated && !isSuperAdmin) ? <Navigate to="/admin/login" replace /> :
+              <POS onClose={() => navigate('/admin')} isDeveloper={isSuperAdmin} />
             } />
           </Routes>
         )}
       </div>
-      </AppShellErrorBoundary>
     </>
   );
 }

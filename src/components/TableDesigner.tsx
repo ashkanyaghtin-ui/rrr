@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, query, orderBy, writeBatch } from 'firebase/firestore';
-import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy, writeBatch } from 'firebase/firestore';
 import { Table } from '../types';
 import { Plus, Trash2, Save, Move, Square, Circle, RotateCcw } from 'lucide-react';
 

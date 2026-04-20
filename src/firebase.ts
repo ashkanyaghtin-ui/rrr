@@ -1,20 +1,16 @@
-import { initializeApp, getApp, getApps } from 'firebase/app';
+import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase SDK
-export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const firestoreDatabaseId = firebaseConfig.firestoreDatabaseId || '(default)';
-export const db = getFirestore(app, firestoreDatabaseId);
-export const defaultDb = getFirestore(app);
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 // Secondary app for creating users without logging out the current admin
-const secondaryApp = getApps().some(existingApp => existingApp.name === 'Secondary')
-  ? getApp('Secondary')
-  : initializeApp(firebaseConfig, 'Secondary');
+const secondaryApp = initializeApp(firebaseConfig, 'Secondary');
 export const secondaryAuth = getAuth(secondaryApp);
 
 // Operation types for error handling
@@ -47,11 +43,7 @@ export interface FirestoreErrorInfo {
 }
 
 /**
- * Handles Firestore errors by logging detailed information.
- *
- * The previous implementation rethrew every Firestore failure, which turned
- * listener or permission issues into React crashes. Returning the structured
- * error keeps the app usable while still surfacing the failure in logs.
+ * Handles Firestore errors by logging detailed information and throwing a JSON-formatted error.
  */
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
@@ -73,7 +65,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  return errInfo;
+  throw new Error(JSON.stringify(errInfo));
 }
 
 /**

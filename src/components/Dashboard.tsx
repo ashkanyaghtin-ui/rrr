@@ -8,37 +8,13 @@ import {
   ArrowUpRight, ArrowDownRight, Clock, CheckCircle2,
   AlertCircle, Package, Calendar, Tag, Sparkles
 } from 'lucide-react';
-import { collection, query, where, orderBy, limit, Timestamp } from 'firebase/firestore';
-import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
+import { collection, onSnapshot, query, where, orderBy, limit, Timestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { formatCurrency } from '../utils/format';
 import { Order, MenuItem, Customer, InventoryItem } from '../types';
 import { motion } from 'motion/react';
 
-const mergeRows = (a: any[], b: any[]) => {
-  const seen = new Set<string>();
-  const out: any[] = [];
-  [...a, ...b].forEach((row) => {
-    const key = String(row?.id || row?.item_id || row?.stock_item_id || row?.name || '').trim().toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    out.push(row);
-  });
-  return out;
-};
-
-const normalizeInventory = (row: any): InventoryItem => ({
-  ...row,
-  name: row?.name || row?.item_name || row?.primary_name || 'Unnamed Item',
-  stock: Number(row?.stock ?? row?.qty ?? row?.running_balance ?? row?.balance ?? row?.current_stock ?? row?.last_qty_change ?? 0) || 0,
-  unit: row?.unit || row?.uom || 'pcs',
-  lowStockThreshold: Number(row?.lowStockThreshold ?? row?.reorder_level ?? 0) || 0,
-  category: row?.category || (Number(row?.item_type || 1) === 2 ? 'finished_good' : 'raw_material'),
-  averageCost: Number(row?.averageCost ?? row?.costPerUnit ?? row?.item_unit_cost ?? row?.last_unit_cost ?? 0) || 0,
-  costPerUnit: Number(row?.costPerUnit ?? row?.averageCost ?? row?.item_unit_cost ?? row?.last_unit_cost ?? 0) || 0,
-});
-
-const Dashboard: React.FC<{ onNavigate?: (tab: string) => void, systemSettings?: any, currentUserName?: string }> = ({ onNavigate, systemSettings, currentUserName }) => {
+const Dashboard: React.FC<{ onNavigate?: (tab: string) => void, systemSettings?: any }> = ({ onNavigate, systemSettings }) => {
   const currencySymbol = systemSettings?.currency || 'AED';
   
   const formatCurrencyLocal = (amount: number) => {
@@ -120,16 +96,12 @@ const Dashboard: React.FC<{ onNavigate?: (tab: string) => void, systemSettings?:
 
       const itemCounts: Record<string, { name: string, count: number, revenue: number }> = {};
       periodFinalized.forEach(order => {
-        const orderItems = Array.isArray(order.items) ? order.items : [];
-        orderItems.forEach(item => {
-          const itemName = typeof item?.name === 'string' ? item.name : 'Unknown item';
-          const itemQuantity = Number(item?.quantity) || 0;
-          const itemPrice = Number(item?.price) || 0;
-          if (!itemCounts[itemName]) {
-            itemCounts[itemName] = { name: itemName, count: 0, revenue: 0 };
+        order.items.forEach(item => {
+          if (!itemCounts[item.name]) {
+            itemCounts[item.name] = { name: item.name, count: 0, revenue: 0 };
           }
-          itemCounts[itemName].count += itemQuantity;
-          itemCounts[itemName].revenue += (itemPrice * itemQuantity);
+          itemCounts[item.name].count += item.quantity;
+          itemCounts[item.name].revenue += (item.price * item.quantity);
         });
       });
 
@@ -142,60 +114,29 @@ const Dashboard: React.FC<{ onNavigate?: (tab: string) => void, systemSettings?:
           revenue: item.revenue
         }));
       setTopItems(topItemsData);
-      setLoading(false);
-    }, () => setLoading(false));
+    });
 
     const qRecent = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(5));
     const unsubscribeRecent = onSnapshot(qRecent, (snapshot) => {
       setRecentOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
-      setLoading(false);
-    }, () => setLoading(false));
+    });
 
     const unsubscribeCustomers = onSnapshot(collection(db, 'customers'), (snapshot) => {
       setStats(prev => ({ ...prev, activeCustomers: snapshot.docs.length }));
-      setLoading(false);
-    }, () => setLoading(false));
-
-    let invA: any[] = [];
-    let invB: any[] = [];
-    let invC: any[] = [];
-    const applyInventoryStats = () => {
-      const merged = mergeRows(mergeRows(invA, invB), invC).map(normalizeInventory);
-      const lowStock = merged.filter(item => Number(item.stock || 0) <= Number(item.lowStockThreshold || 0)).length;
-      setStats(prev => ({ ...prev, lowStockItems: lowStock }));
-      setLoading(false);
-    };
+    });
 
     const unsubscribeInventory = onSnapshot(collection(db, 'inventory'), (snapshot) => {
-      invA = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      applyInventoryStats();
-    }, () => {
-      invA = [];
-      applyInventoryStats();
-    });
-
-    const unsubscribeInventoryLegacy = onSnapshot(collection(db, 'inventory_items'), (snapshot) => {
-      invB = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      applyInventoryStats();
-    }, () => {
-      invB = [];
-      applyInventoryStats();
-    });
-
-    const unsubscribeStockItem = onSnapshot(collection(db, 'stock_item'), (snapshot) => {
-      invC = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      applyInventoryStats();
-    }, () => {
-      invC = [];
-      applyInventoryStats();
+      const items = snapshot.docs.map(doc => doc.data() as InventoryItem);
+      const lowStock = items.filter(item => item.stock <= (item.lowStockThreshold || 0)).length;
+      setStats(prev => ({ ...prev, lowStockItems: lowStock }));
+      setLoading(false);
     });
 
     const unsubscribeReservations = onSnapshot(collection(db, 'reservations'), (snapshot) => {
       const today = new Date().toISOString().split('T')[0];
       const count = snapshot.docs.filter(doc => doc.data().date === today && doc.data().status !== 'cancelled').length;
       setStats(prev => ({ ...prev, todayReservations: count }));
-      setLoading(false);
-    }, () => setLoading(false));
+    });
 
     const unsubscribePromos = onSnapshot(collection(db, 'promotions'), (snapshot) => {
       const now = new Date().toISOString().split('T')[0];
@@ -204,16 +145,13 @@ const Dashboard: React.FC<{ onNavigate?: (tab: string) => void, systemSettings?:
         return d.status === 'active' && d.validFrom <= now && d.validUntil >= now;
       }).length;
       setStats(prev => ({ ...prev, activePromotions: count }));
-      setLoading(false);
-    }, () => setLoading(false));
+    });
 
     return () => {
       unsubscribeOrders();
       unsubscribeRecent();
       unsubscribeCustomers();
       unsubscribeInventory();
-      unsubscribeInventoryLegacy();
-      unsubscribeStockItem();
       unsubscribeReservations();
       unsubscribePromos();
     };
@@ -240,9 +178,6 @@ const Dashboard: React.FC<{ onNavigate?: (tab: string) => void, systemSettings?:
           <div>
             <h1 className="text-3xl font-black text-foreground uppercase tracking-tight leading-none">Rivas Executive</h1>
             <p className="text-muted-foreground text-[10px] font-black uppercase tracking-[0.4em] mt-2">Operational Intelligence Dashboard</p>
-            {currentUserName && (
-              <p className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.2em] mt-2">Signed In: {currentUserName}</p>
-            )}
           </div>
         </div>
         <div className="flex items-center gap-2 bg-muted/20 p-2 rounded-2xl border border-border shadow-inner">

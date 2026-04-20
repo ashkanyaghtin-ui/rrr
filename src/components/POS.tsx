@@ -1,8 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, query, orderBy, updateDoc, doc, addDoc, serverTimestamp, getDocs, where, getDoc, limit, deleteField, runTransaction, increment, setDoc } from 'firebase/firestore';
-import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
+import { collection, onSnapshot, query, orderBy, updateDoc, doc, addDoc, serverTimestamp, getDocs, where, getDoc, limit, deleteField, runTransaction, increment, setDoc } from 'firebase/firestore';
 import { ShoppingBag, Clock, CheckCircle2, Ban, Phone, MapPin, User, Package, ArrowLeft, ChefHat, Truck, FileText, Printer, Plus, Utensils, LayoutGrid, CreditCard, Banknote, Receipt, Users, Split, Calculator, X, Bell, Maximize2, MoreVertical, ChevronDown, Calendar, Hash, Tag, Pencil, Move, Layout, Search, AlertTriangle, ShieldCheck } from 'lucide-react';
 import DigitalClock from './DigitalClock';
 import { useAuth } from '../contexts/AuthContext';
@@ -11,146 +10,10 @@ import { Order, MenuItem, Table, Category, Customer, CustomerGroup } from '../ty
 
 interface POSProps {
   onClose: () => void;
+  isDeveloper?: boolean;
 }
 
-interface PosSession {
-  id: string;
-  status: 'open' | 'closed';
-  userId: string;
-  staffName?: string;
-  terminalId?: string;
-  terminalName?: string;
-  openingFloat: number;
-  openingNote?: string;
-  startedAt?: any;
-  currentCash?: number;
-  onBreak?: boolean;
-  breakStartedAt?: any;
-  totalBreakMs?: number;
-}
-
-type OrderStateMeta = {
-  label: string;
-  colorClass: string;
-  nextStatus?: Order['status'];
-  actionLabel?: string;
-};
-
-const ACTIVE_SESSION_STORAGE_KEY = 'pos_active_session';
-
-function readStoredSession(): PosSession | null {
-  try {
-    const raw = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as PosSession;
-  } catch {
-    return null;
-  }
-}
-
-function persistSession(session: PosSession | null) {
-  try {
-    if (!session) {
-      localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-      return;
-    }
-
-    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(session));
-  } catch {
-    // Ignore local storage failures; the UI can still operate with server-backed writes.
-  }
-}
-
-function isPermissionDenied(error: unknown): boolean {
-  const code = typeof error === 'object' && error !== null ? (error as any).code : '';
-  const message = typeof error === 'object' && error !== null ? String((error as any).message || '') : '';
-  return code === 'permission-denied' || message.toLowerCase().includes('insufficient permissions');
-}
-
-function toEpochMs(value: any, fallback: number = Date.now()): number {
-  if (!value) return fallback;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
-  if (typeof value === 'string') {
-    const parsed = new Date(value).getTime();
-    return Number.isFinite(parsed) ? parsed : fallback;
-  }
-  if (typeof value?.toDate === 'function') {
-    const parsed = value.toDate().getTime();
-    return Number.isFinite(parsed) ? parsed : fallback;
-  }
-  return fallback;
-}
-
-function formatDurationClock(ms: number): string {
-  const safe = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(safe / 3600);
-  const m = Math.floor((safe % 3600) / 60);
-  const s = safe % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-function normalizeTerminalToken(value: unknown): string {
-  return String(value || '').trim().toLowerCase();
-}
-
-function resolveTerminalIdFromToken(token: string, terminalRows: any[]): string {
-  const normalized = normalizeTerminalToken(token);
-  if (!normalized) return '';
-
-  const byId = terminalRows.find((t) => normalizeTerminalToken(t?.id) === normalized);
-  if (byId?.id) return String(byId.id);
-
-  const byName = terminalRows.find((t) => normalizeTerminalToken(t?.name) === normalized);
-  if (byName?.id) return String(byName.id);
-
-  return String(token || '').trim();
-}
-
-function mergeRows(a: any[], b: any[]): any[] {
-  const seen = new Set<string>();
-  const merged: any[] = [];
-  [...a, ...b].forEach((row) => {
-    const key = String(row?.id || row?.item_id || row?.stock_item_id || row?.name || row?.item_name || '').trim().toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    merged.push(row);
-  });
-  return merged;
-}
-
-function normalizeTerminalRow(row: any): any {
-  return {
-    ...row,
-    id: String(row?.id || row?.terminalId || row?.terminal_id || '').trim(),
-    name: row?.name || row?.terminalName || row?.terminal_name || row?.location || row?.code || String(row?.id || row?.terminalId || ''),
-  };
-}
-
-function normalizeInventoryRow(row: any): any {
-  const inferredName = row?.name || row?.item_name || row?.primary_name || 'Unnamed Item';
-  const inferredStock = Number(row?.stock ?? row?.qty ?? row?.running_balance ?? row?.balance ?? row?.current_stock ?? row?.last_qty_change ?? 0) || 0;
-  const inferredUnit = row?.unit || row?.uom || 'pcs';
-  const inferredThreshold = Number(row?.lowStockThreshold ?? row?.reorder_level ?? 0) || 0;
-  const inferredAvgCost = Number(row?.averageCost ?? row?.costPerUnit ?? row?.item_unit_cost ?? row?.last_unit_cost ?? 0) || 0;
-
-  return {
-    ...row,
-    id: String(row?.id || row?.inventoryItemId || row?.item_id || row?.stock_item_id || '').trim(),
-    name: inferredName,
-    stock: inferredStock,
-    unit: inferredUnit,
-    lowStockThreshold: inferredThreshold,
-    averageCost: inferredAvgCost,
-    costPerUnit: inferredAvgCost,
-    category: row?.category || (Number(row?.item_type || 1) === 2 ? 'finished_good' : 'raw_material'),
-  };
-}
-
-function formatTimeHHMM(date: Date): string {
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-
-export default function POS({ onClose }: POSProps) {
+export default function POS({ onClose, isDeveloper }: POSProps) {
   const { user, profile } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -251,19 +114,6 @@ export default function POS({ onClose }: POSProps) {
   const [newOrderPaymentMethod, setNewOrderPaymentMethod] = useState<Order['paymentMethod'] | ''>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
-  const [activeSession, setActiveSession] = useState<PosSession | null>(null);
-  const [isStartingSession, setIsStartingSession] = useState(false);
-  const [openingFloatInput, setOpeningFloatInput] = useState('');
-  const [openingNoteInput, setOpeningNoteInput] = useState('');
-  const [sessionVarianceInput, setSessionVarianceInput] = useState('');
-  const [cashierNameInput, setCashierNameInput] = useState('');
-  const [terminalIdInput, setTerminalIdInput] = useState('POS-TERMINAL');
-  const [isOpeningShift, setIsOpeningShift] = useState(false);
-  const [shiftStartError, setShiftStartError] = useState('');
-  const [clearanceReason, setClearanceReason] = useState('');
-  const [clearanceOrderId, setClearanceOrderId] = useState<string | null>(null);
-  const [isBreakSubmitting, setIsBreakSubmitting] = useState(false);
-  const [sessionActionMessage, setSessionActionMessage] = useState('');
 
   // Input states
   const [occupancyInput, setOccupancyInput] = useState('');
@@ -279,508 +129,64 @@ export default function POS({ onClose }: POSProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [groups, setGroups] = useState<CustomerGroup[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
-  const [terminals, setTerminals] = useState<any[]>([]);
-  const [orderStateOverrides, setOrderStateOverrides] = useState<Record<string, Partial<OrderStateMeta>>>({});
-
-  const rawProfileTerminalToken = String((profile as any)?.terminalId || (profile as any)?.terminalName || '').trim();
-  const profileTerminalId = useMemo(
-    () => resolveTerminalIdFromToken(rawProfileTerminalToken, terminals),
-    [rawProfileTerminalToken, terminals]
-  );
-
-  const selectableTerminals = useMemo(() => {
-    const token = profileTerminalId || rawProfileTerminalToken;
-    if (!token) return terminals;
-    const normalizedToken = normalizeTerminalToken(token);
-
-    const exists = terminals.some((t) => {
-      const idToken = normalizeTerminalToken(t?.id);
-      const nameToken = normalizeTerminalToken(t?.name);
-      return idToken === normalizedToken || nameToken === normalizedToken;
-    });
-
-    if (exists) return terminals;
-    return [{ id: token, name: rawProfileTerminalToken || token }, ...terminals];
-  }, [terminals, profileTerminalId, rawProfileTerminalToken]);
 
   const navigate = useNavigate();
-
-  const defaultOrderStates: Record<Order['status'], OrderStateMeta> = {
-    pending: { label: 'Pending', colorClass: 'bg-yellow-500 text-white' },
-    'awaiting-confirmation': { label: 'Awaiting Confirmation', colorClass: 'bg-yellow-500 text-white', nextStatus: 'confirmed', actionLabel: 'Confirm Order' },
-    confirmed: { label: 'Confirmed', colorClass: 'bg-amber-500 text-white', nextStatus: 'preparing', actionLabel: 'Start Preparing' },
-    preparing: { label: 'Preparing', colorClass: 'bg-orange-500 text-white', nextStatus: 'serving', actionLabel: 'Start Serving' },
-    serving: { label: 'Serving', colorClass: 'bg-purple-500 text-white', nextStatus: 'done-serving', actionLabel: 'Done Serving' },
-    'done-serving': { label: 'Done Serving', colorClass: 'bg-indigo-500 text-white', nextStatus: 'awaiting-bill', actionLabel: 'Awaiting Bill' },
-    'awaiting-bill': { label: 'Awaiting Bill', colorClass: 'bg-pink-500 text-white', nextStatus: 'finalized', actionLabel: 'Finalize' },
-    finalized: { label: 'Finalized', colorClass: 'bg-emerald-500 text-white' },
-    cancelled: { label: 'Cancelled', colorClass: 'bg-red-500 text-white' },
-    paid: { label: 'Paid', colorClass: 'bg-blue-500 text-white' }
-  };
-
-  const mergedOrderStates = useMemo(() => {
-    const merged: Record<Order['status'], OrderStateMeta> = { ...defaultOrderStates };
-    (Object.keys(defaultOrderStates) as Order['status'][]).forEach((status) => {
-      if (orderStateOverrides[status]) {
-        merged[status] = { ...merged[status], ...orderStateOverrides[status] };
-      }
-    });
-    return merged;
-  }, [orderStateOverrides]);
-
-  const currentStaffName = useMemo(
-    () => {
-      const sessionName = sessionStorage.getItem('activeStaffName') || '';
-      return sessionName || profile?.displayName || user?.displayName || user?.email || 'Staff User';
-    },
-    [profile, user]
-  );
-
-  const ensureActiveSession = () => {
-    if (activeSession) return true;
-    setIsStartingSession(true);
-    return false;
-  };
-
-  const activeBreakElapsedMs = useMemo(() => {
-    if (!activeSession?.onBreak) return 0;
-    const startedAtMs = toEpochMs(activeSession.breakStartedAt);
-    return Math.max(0, currentTime - startedAtMs);
-  }, [activeSession?.onBreak, activeSession?.breakStartedAt, currentTime]);
-
-  const totalBreakMsLive = useMemo(() => {
-    return (activeSession?.totalBreakMs || 0) + activeBreakElapsedMs;
-  }, [activeSession?.totalBreakMs, activeBreakElapsedMs]);
-
-  useEffect(() => {
-    if (!sessionActionMessage) return;
-    const timer = setTimeout(() => setSessionActionMessage(''), 5000);
-    return () => clearTimeout(timer);
-  }, [sessionActionMessage]);
-
-  const requestManagerClearance = (reason: string, callback: () => void, orderId?: string) => {
-    setClearanceReason(reason);
-    setClearanceOrderId(orderId || null);
-    setClearanceCallback(() => callback);
-    setClearanceCodeInput('');
-    setIsClearanceModalOpen(true);
-  };
-
-  const updateActiveSession = async (patch: Partial<PosSession>) => {
-    if (!activeSession) return;
-    const next = { ...activeSession, ...patch };
-    setActiveSession(next);
-    persistSession(next);
-
-    if (!activeSession.id.startsWith('local-')) {
-      try {
-        await updateDoc(doc(db, 'pos_sessions', activeSession.id), {
-          ...patch,
-          updatedAt: serverTimestamp()
-        });
-      } catch (err) {
-        if (!isPermissionDenied(err)) {
-          console.error('Failed to update POS session:', err);
-        }
-      }
-    }
-  };
-
-  const ensureHrClockInForShiftStart = async (staffNameForShift: string) => {
-    const activeStaffDocId = sessionStorage.getItem('activeStaffDocId') || '';
-    const staffId = activeStaffDocId || user?.uid || '';
-    if (!staffId) return;
-
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-    const startTime = formatTimeHHMM(now);
-
-    const shiftsSnap = await getDocs(query(collection(db, 'shifts'), where('staffId', '==', staffId), limit(20)));
-    const todaysShift = shiftsSnap.docs.find((d) => {
-      const row = d.data() as any;
-      return String(row.date || '') === today;
-    });
-
-    if (todaysShift) {
-      const row = todaysShift.data() as any;
-      const updates: any = {
-        staffName: staffNameForShift,
-        updatedAt: serverTimestamp(),
-      };
-      if (!row.clockIn) updates.clockIn = serverTimestamp();
-      if (!row.startTime) updates.startTime = startTime;
-      if (!row.status || row.status === 'scheduled' || row.status === 'off') updates.status = 'present';
-      await updateDoc(doc(db, 'shifts', todaysShift.id), updates);
-      return;
-    }
-
-    await addDoc(collection(db, 'shifts'), {
-      staffId,
-      staffName: staffNameForShift,
-      date: today,
-      startTime,
-      endTime: null,
-      status: 'present',
-      hoursWorked: 0,
-      clockIn: serverTimestamp(),
-      clockOut: null,
-      notes: 'Auto clock-in from POS shift start',
-      createdAt: serverTimestamp(),
-    });
-  };
-
-  const ensureHrClockOutForShiftEnd = async () => {
-    const activeStaffDocId = sessionStorage.getItem('activeStaffDocId') || '';
-    const staffId = activeStaffDocId || user?.uid || '';
-    if (!staffId) return;
-
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-    const endTime = formatTimeHHMM(now);
-
-    const shiftsSnap = await getDocs(query(collection(db, 'shifts'), where('staffId', '==', staffId), limit(20)));
-    const openTodayShift = shiftsSnap.docs.find((d) => {
-      const row = d.data() as any;
-      return String(row.date || '') === today && row.clockIn && !row.clockOut;
-    });
-
-    if (!openTodayShift) return;
-
-    const row = openTodayShift.data() as any;
-    let workedHours = Number(row.hoursWorked || 0);
-    if (typeof row.clockIn?.toDate === 'function') {
-      const ms = Date.now() - row.clockIn.toDate().getTime();
-      workedHours = Math.max(0, Number((ms / (1000 * 60 * 60)).toFixed(2)));
-    }
-
-    await updateDoc(doc(db, 'shifts', openTodayShift.id), {
-      endTime,
-      clockOut: serverTimestamp(),
-      status: 'off',
-      hoursWorked: workedHours,
-      updatedAt: serverTimestamp(),
-    });
-  };
-
-  const recordCashDrawerMovement = async (direction: 'in' | 'out') => {
-    if (!activeSession) return;
-    const amountInput = window.prompt(`Enter cash ${direction === 'in' ? 'IN' : 'OUT'} amount (AED)`);
-    if (!amountInput) return;
-    const amount = Math.round(Number(amountInput) * 100);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      alert('Please enter a valid amount greater than 0.');
-      return;
-    }
-    const memo = window.prompt('Optional memo') || '';
-
-    let auditStored = true;
-    try {
-      await addDoc(collection(db, 'pos_change_cash_transactions'), {
-        sessionId: activeSession.id,
-        direction,
-        amount,
-        memo,
-        userId: user?.uid || null,
-        userEmail: user?.email || null,
-        date: serverTimestamp()
-      });
-    } catch (err) {
-      if (!isPermissionDenied(err)) {
-        console.error('Failed to record cash drawer movement:', err);
-      }
-      auditStored = false;
-    }
-
-    const delta = direction === 'in' ? amount : -amount;
-    const nextCash = Math.max(0, (activeSession.currentCash ?? activeSession.openingFloat ?? 0) + delta);
-    await updateActiveSession({ currentCash: nextCash });
-    const directionText = direction === 'in' ? 'IN' : 'OUT';
-    setSessionActionMessage(`${directionText} ${formatCurrency(amount)} ${auditStored ? 'saved' : 'applied locally (no write permission)'}`);
-  };
-
-  const toggleSessionBreak = async (startBreak: boolean) => {
-    if (!activeSession || isBreakSubmitting) return;
-    setIsBreakSubmitting(true);
-    try {
-      const nowIso = new Date().toISOString();
-      if (startBreak) {
-        let auditStored = true;
-        try {
-          await addDoc(collection(db, 'pos_session_break_events'), {
-            sessionId: activeSession.id,
-            event: 'break_start',
-            userId: user?.uid || null,
-            userEmail: user?.email || null,
-            at: serverTimestamp()
-          });
-        } catch (err) {
-          if (!isPermissionDenied(err)) {
-            console.error('Failed to record break start event:', err);
-          }
-          auditStored = false;
-        }
-
-        await updateActiveSession({ onBreak: true, breakStartedAt: nowIso });
-        setSessionActionMessage(auditStored ? 'Break started and saved.' : 'Break started locally (no write permission).');
-        return;
-      }
-
-      const startedAtMs = toEpochMs(activeSession.breakStartedAt);
-      const elapsed = Math.max(0, Date.now() - startedAtMs);
-      let auditStored = true;
-      try {
-        await addDoc(collection(db, 'pos_session_break_events'), {
-          sessionId: activeSession.id,
-          event: 'break_end',
-          elapsedMs: elapsed,
-          userId: user?.uid || null,
-          userEmail: user?.email || null,
-          at: serverTimestamp()
-        });
-      } catch (err) {
-        if (!isPermissionDenied(err)) {
-          console.error('Failed to record break end event:', err);
-        }
-        auditStored = false;
-      }
-
-      await updateActiveSession({
-        onBreak: false,
-        breakStartedAt: null as any,
-        totalBreakMs: (activeSession.totalBreakMs || 0) + elapsed
-      });
-      setSessionActionMessage(`Break ended (${formatDurationClock(elapsed)}) ${auditStored ? 'saved' : 'applied locally'}.`);
-    } finally {
-      setIsBreakSubmitting(false);
-    }
-  };
-
-  const approveManagerClearance = async () => {
-    if (clearanceCodeInput !== managerClearanceCode) {
-      alert('Invalid Clearance Code');
-      return false;
-    }
-
-    try {
-      if (activeSession) {
-        await addDoc(collection(db, 'pos_session_approvals'), {
-          sessionId: activeSession.id,
-          orderId: clearanceOrderId || null,
-          reason: clearanceReason || 'manager_override',
-          approvedByUserId: user?.uid || null,
-          approvedByEmail: user?.email || null,
-          approvedAt: serverTimestamp()
-        });
-      }
-
-      clearanceCallback?.();
-      setIsClearanceModalOpen(false);
-      setClearanceCodeInput('');
-      setClearanceCallback(null);
-      setClearanceReason('');
-      setClearanceOrderId(null);
-      return true;
-    } catch (err) {
-      if (isPermissionDenied(err)) {
-        // Fallback: allow clearance to proceed when audit collection is not writable.
-        clearanceCallback?.();
-        setIsClearanceModalOpen(false);
-        setClearanceCodeInput('');
-        setClearanceCallback(null);
-        setClearanceReason('');
-        setClearanceOrderId(null);
-        return true;
-      }
-
-      handleFirestoreError(err, OperationType.CREATE, 'pos_session_approvals');
-      return false;
-    }
-  };
 
   useEffect(() => {
     if (!user) return;
 
-    const loadStaticCollections = async () => {
-      try {
-        const safeDocs = async (fn: () => Promise<any>) => {
-          try {
-            const snap = await fn();
-            return snap.docs || [];
-          } catch {
-            return [];
-          }
-        };
+    let q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(100));
 
-        const [menuDocs, catsDocs, tablesDocs, groupsDocs, driversDocs, orderStatesDocs, terminalsDocs, terminalsLegacyDocs, reservationsDocs] = await Promise.all([
-          safeDocs(() => getDocs(collection(db, 'menu'))),
-          safeDocs(() => getDocs(query(collection(db, 'categories'), orderBy('order')))),
-          safeDocs(() => getDocs(collection(db, 'tables'))),
-          safeDocs(() => getDocs(collection(db, 'customerGroups'))),
-          safeDocs(() => getDocs(query(collection(db, 'staff'), where('role', '==', 'driver')))),
-          safeDocs(() => getDocs(query(collection(db, 'order_states'), orderBy('order')))),
-          safeDocs(() => getDocs(query(collection(db, 'terminals'), orderBy('name')))),
-          safeDocs(() => getDocs(collection(db, 'terminal'))),
-          safeDocs(() => getDocs(collection(db, 'reservations'))),
-        ]);
-
-        setMenuItems(menuDocs.map((doc: any) => ({ id: doc.id, ...doc.data() } as MenuItem)));
-        setCategories(catsDocs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Category)));
-        setTables(tablesDocs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Table)));
-        setGroups(groupsDocs.map((doc: any) => ({ id: doc.id, ...doc.data() } as CustomerGroup)));
-        setDrivers(driversDocs.map((doc: any) => ({ id: doc.id, ...doc.data() })));
-
-        const terminalsMerged = mergeRows(
-          terminalsDocs.map((doc: any) => normalizeTerminalRow({ id: doc.id, ...doc.data() })),
-          terminalsLegacyDocs.map((doc: any) => normalizeTerminalRow({ id: doc.id, ...doc.data() }))
-        );
-        setTerminals(terminalsMerged);
-        setReservations(reservationsDocs.map((doc: any) => ({ id: doc.id, ...doc.data() })));
-
-        const overrides: Record<string, Partial<OrderStateMeta>> = {};
-        orderStatesDocs.forEach((d: any) => {
-          const row = d.data() as any;
-          const code = String(row.code || row.status || d.id || '');
-          if (!(code in defaultOrderStates)) return;
-          overrides[code] = {
-            label: row.label || row.name || undefined,
-            colorClass: row.colorClass || undefined,
-            nextStatus: row.nextStatus || undefined,
-            actionLabel: row.actionLabel || undefined
-          };
-        });
-        setOrderStateOverrides(overrides);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.LIST, 'POS static collections');
-      }
-    };
-
-    void loadStaticCollections();
-
-    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(100));
+    // Filter by store if not admin
+    if (profile?.role !== 'admin' && profile?.storeId) {
+      q = query(collection(db, 'orders'), where('storeId', '==', profile.storeId), orderBy('createdAt', 'desc'), limit(100));
+    }
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const allOrders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
-      const latestOrder = snapshot.docs[0]?.data() as any;
-      if (latestOrder?.createdAt?.toMillis && latestOrder.createdAt.toMillis() > lastOrderTimestamp) {
-        const audio = new Audio('https://audio-previews.elements.envatousercontent.com/files/259410951/preview.mp3');
-        audio.playbackRate = 0.75;
-        audio.play().catch(e => console.error('Sound play failed:', e));
-        setLastOrderTimestamp(latestOrder.createdAt.toMillis());
-      }
+      // Show active orders and recently finalized/cancelled ones
       setOrders(allOrders);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'orders'));
 
-    let invRowsA: any[] = [];
-    let invRowsB: any[] = [];
-    let invRowsC: any[] = [];
-    const applyInventoryRows = () => {
-      const merged = mergeRows(mergeRows(invRowsA, invRowsB), invRowsC).map((row) => normalizeInventoryRow(row));
-      setInventory(merged);
-    };
+    const unsubscribeMenu = onSnapshot(collection(db, 'menu'), (snapshot) => {
+      setMenuItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MenuItem)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'menu'));
+
+    const unsubscribeCats = onSnapshot(query(collection(db, 'categories'), orderBy('order')), (snapshot) => {
+      setCategories(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'categories'));
+
+    const unsubscribeTables = onSnapshot(collection(db, 'tables'), (snapshot) => {
+      setTables(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Table)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'tables'));
+
+    const unsubscribeGroups = onSnapshot(collection(db, 'customerGroups'), (snapshot) => {
+      setGroups(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomerGroup)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'customerGroups'));
+
+    const unsubscribeDrivers = onSnapshot(query(collection(db, 'staff'), where('role', '==', 'driver')), (snapshot) => {
+      setDrivers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'staff'));
 
     const unsubscribeInventory = onSnapshot(collection(db, 'inventory'), (snapshot) => {
-      invRowsA = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      applyInventoryRows();
+      setInventory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'inventory'));
 
-    const unsubscribeInventoryLegacy = onSnapshot(collection(db, 'inventory_items'), (snapshot) => {
-      invRowsB = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      applyInventoryRows();
-    }, () => {
-      invRowsB = [];
-      applyInventoryRows();
-    });
-
-    const unsubscribeStockItem = onSnapshot(collection(db, 'stock_item'), (snapshot) => {
-      invRowsC = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      applyInventoryRows();
-    }, () => {
-      invRowsC = [];
-      applyInventoryRows();
-    });
+    const unsubscribeReservations = onSnapshot(collection(db, 'reservations'), (snapshot) => {
+      setReservations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'reservations'));
 
     return () => {
       unsubscribe();
+      unsubscribeMenu();
+      unsubscribeCats();
+      unsubscribeTables();
+      unsubscribeReservations();
+      unsubscribeGroups();
+      unsubscribeDrivers();
       unsubscribeInventory();
-      unsubscribeInventoryLegacy();
-      unsubscribeStockItem();
     };
   }, [user]);
-
-  useEffect(() => {
-    if (!user) {
-      setActiveSession(null);
-      persistSession(null);
-      return;
-    }
-
-    const storedSession = readStoredSession();
-    if (storedSession && storedSession.userId === user.uid && storedSession.status === 'open') {
-      setActiveSession(storedSession);
-      setIsStartingSession(false);
-      return;
-    }
-
-    setActiveSession(null);
-    persistSession(null);
-  }, [user]);
-
-  useEffect(() => {
-    if (!isStartingSession) return;
-    setCashierNameInput(currentStaffName);
-    setTerminalIdInput(profileTerminalId || rawProfileTerminalToken || (profile as any)?.terminalId || 'POS-TERMINAL');
-    setShiftStartError('');
-  }, [isStartingSession, profile, currentStaffName, profileTerminalId, rawProfileTerminalToken]);
-
-  useEffect(() => {
-    if (!isStartingSession) return;
-
-    const activeStaffDocId = sessionStorage.getItem('activeStaffDocId') || '';
-    if (!activeStaffDocId) return;
-
-    let cancelled = false;
-
-    const hydrateFromStaff = async () => {
-      try {
-        const staffSnap = await getDoc(doc(db, 'staff', activeStaffDocId));
-        if (!staffSnap.exists() || cancelled) return;
-
-        const staffData = staffSnap.data() as any;
-        const staffTerminalToken = String(staffData?.terminalId || staffData?.terminalName || '').trim();
-        const resolvedStaffTerminalId = resolveTerminalIdFromToken(staffTerminalToken, terminals);
-        const staffName = String(staffData?.name || '').trim();
-
-        if (staffName) {
-          setCashierNameInput(staffName);
-        }
-
-        if (resolvedStaffTerminalId) {
-          setTerminalIdInput(resolvedStaffTerminalId);
-        }
-      } catch (err) {
-        console.warn('Unable to hydrate start-shift defaults from active staff doc:', err);
-      }
-    };
-
-    void hydrateFromStaff();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isStartingSession, terminals]);
-
-  useEffect(() => {
-    if (!isStartingSession) return;
-    if (!selectableTerminals.length) return;
-    if (terminalIdInput && selectableTerminals.some((t) => t.id === terminalIdInput)) return;
-
-    if (profileTerminalId && selectableTerminals.some((t) => t.id === profileTerminalId)) {
-      setTerminalIdInput(profileTerminalId);
-      return;
-    }
-
-    setTerminalIdInput(selectableTerminals[0].id);
-  }, [isStartingSession, selectableTerminals, terminalIdInput, profileTerminalId]);
 
   // Server-side customer search
   useEffect(() => {
@@ -830,56 +236,24 @@ export default function POS({ onClose }: POSProps) {
   const [printServerUrls, setPrintServerUrls] = useState<string[]>([]);
   const [systemSettings, setSystemSettings] = useState<any>(null);
   const [lastOrderTimestamp, setLastOrderTimestamp] = useState<number>(Date.now());
-  const managerClearanceCode = String(systemSettings?.managerClearanceCode || '1234');
-  const discountApprovalThresholdPercent = Number(systemSettings?.discountApprovalThresholdPercent ?? 15);
-  const discountApprovalThresholdAmount = Number(systemSettings?.discountApprovalThresholdAmount ?? 50);
-
-  const sessionOrderStats = useMemo(() => {
-    if (!activeSession) {
-      return {
-        activeCount: 0,
-        settledCount: 0,
-        cancelledCount: 0,
-        grossSales: 0,
-        avgTicket: 0,
-      };
-    }
-
-    const sessionStartMs = activeSession.startedAt?.toDate
-      ? activeSession.startedAt.toDate().getTime()
-      : 0;
-
-    const scopedOrders = orders.filter((o) => {
-      const createdMs = o.createdAt?.toDate ? o.createdAt.toDate().getTime() : 0;
-      return createdMs >= sessionStartMs;
-    });
-
-    const activeCount = scopedOrders.filter((o) => {
-      const status = String(o.status || '').toLowerCase();
-      return status !== 'finalized' && status !== 'cancelled' && status !== 'paid';
-    }).length;
-
-    const settledOrders = scopedOrders.filter((o) => {
-      const status = String(o.status || '').toLowerCase();
-      return status === 'paid' || status === 'finalized';
-    });
-
-    const settledCount = settledOrders.length;
-    const cancelledCount = scopedOrders.filter((o) => String(o.status || '').toLowerCase() === 'cancelled').length;
-    const grossSales = settledOrders.reduce((sum, o) => sum + (o.total || 0), 0);
-    const avgTicket = settledCount > 0 ? Math.round(grossSales / settledCount) : 0;
-
-    return {
-      activeCount,
-      settledCount,
-      cancelledCount,
-      grossSales,
-      avgTicket,
-    };
-  }, [orders, activeSession]);
 
   useEffect(() => {
     if (!user) return;
+
+    // Notification sound for new orders
+    const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(1));
+    const unsubscribeOrders = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        const newOrder = snapshot.docs[0].data();
+        if (newOrder.createdAt && newOrder.createdAt.toMillis() > lastOrderTimestamp) {
+          // Play notification sound
+          const audio = new Audio('https://audio-previews.elements.envatousercontent.com/files/259410951/preview.mp3');
+          audio.playbackRate = 0.75;
+          audio.play().catch(e => console.error("Sound play failed:", e));
+          setLastOrderTimestamp(newOrder.createdAt.toMillis());
+        }
+      }
+    });
 
     const unsubscribeSettings = onSnapshot(doc(db, 'settings', 'system'), (doc) => {
       if (doc.exists()) {
@@ -892,9 +266,10 @@ export default function POS({ onClose }: POSProps) {
     }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/system'));
 
     return () => {
+      unsubscribeOrders();
       unsubscribeSettings();
     };
-  }, [user]);
+  }, [user, lastOrderTimestamp]);
 
   // Dynamic currency and tax helpers
   const currencySymbol = systemSettings?.currency || 'AED';
@@ -1017,33 +392,6 @@ export default function POS({ onClose }: POSProps) {
     const subtotal = order.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
     const discountAmount = order.discountType === 'percentage' ? (subtotal * ((order.discount || 0) / 100)) : ((order.discount || 0) * 100);
     const taxAmount = (subtotal - discountAmount) * taxFactor;
-
-    try {
-      if (activeSession) {
-        await addDoc(collection(db, 'saved_pos_print'), {
-          posSessionId: activeSession.id,
-          voucherNo: order.orderNo || order.id.slice(-6).toUpperCase(),
-          customerName: order.customerName || 'Guest',
-          amount: order.total,
-          cashAmount: order.payments?.reduce((sum: number, p: any) => sum + (p.cashAmount || 0), 0) || 0,
-          cardAmount: order.payments?.reduce((sum: number, p: any) => sum + (p.cardAmount || 0), 0) || 0,
-          otherAmount: order.payments?.reduce((sum: number, p: any) => sum + (p.onlineAmount || 0), 0) || 0,
-          print: JSON.stringify({
-            orderId: order.id,
-            orderNo: order.orderNo,
-            total: order.total,
-            paymentMethod: order.paymentMethod,
-            items: order.items
-          }),
-          date: serverTimestamp()
-        });
-      }
-    } catch (err) {
-      if (!isPermissionDenied(err)) {
-        console.warn('Failed to persist saved POS print', err);
-      }
-    }
-
     const html = `
       <html>
         <head>
@@ -1121,7 +469,6 @@ export default function POS({ onClose }: POSProps) {
   };
 
   const saveOrder = async () => {
-    if (!ensureActiveSession()) return;
     if (currentOrderItems.length === 0 || isSubmitting) return;
     if (orderTypeInput === 'dine-in' && !selectedTable) return;
 
@@ -1171,16 +518,10 @@ export default function POS({ onClose }: POSProps) {
         }
       });
 
-      let postSaveOrder: Order | null = null;
-      let postSaveCartId: string | null = null;
-      let postSaveOrderId: string | null = null;
-
       if (editingOrder) {
         await updateDoc(doc(db, 'orders', editingOrder.id), orderData);
         const updatedOrder = { ...editingOrder, ...orderData };
-        postSaveOrder = updatedOrder as Order;
-        postSaveOrderId = editingOrder.id;
-        postSaveCartId = `${activeSession?.id || 'local'}-edit-${editingOrder.id}-${Date.now()}`;
+        printKOT(updatedOrder as Order);
       } else {
         await runTransaction(db, async (transaction) => {
           // --- 1. ALL READS FIRST ---
@@ -1253,9 +594,7 @@ export default function POS({ onClose }: POSProps) {
           // Save Order
           transaction.set(newOrderRef, orderData);
         });
-        postSaveOrder = orderData as Order;
-        postSaveOrderId = orderData.id;
-        postSaveCartId = `${activeSession?.id || 'local'}-new-${orderData.id}-${Date.now()}`;
+        printKOT(orderData as Order);
       }
 
       setIsNewOrderModalOpen(false);
@@ -1264,13 +603,6 @@ export default function POS({ onClose }: POSProps) {
       setEditingOrder(null);
       setNoteInput('');
       setPosStep('tables');
-
-      if (postSaveOrder && postSaveCartId && postSaveOrderId) {
-        window.setTimeout(() => {
-          void persistCartSubEntities(postSaveCartId as string, postSaveOrderId as string);
-          printKOT(postSaveOrder as Order);
-        }, 0);
-      }
     } catch (err) {
       handleFirestoreError(err, editingOrder ? OperationType.UPDATE : OperationType.CREATE, 'orders');
     } finally {
@@ -1282,28 +614,15 @@ export default function POS({ onClose }: POSProps) {
     const soldByPiece = systemSettings?.soldByPiece !== false; // Default to true
 
     const recordMovement = async (itemId: string, itemName: string, qtyDeducted: number, originalStock: number, newStock: number) => {
-      const movementDoc = {
+      await addDoc(collection(db, 'stock_movements'), {
         inventoryItemId: itemId,
         itemName: itemName,
         type: 'sale',
-        flowType: 'SALE',
         quantityChange: -qtyDeducted,
         stockAfter: newStock,
         reference: `Order #${order.id.slice(-6).toUpperCase()}`,
-        orderId: order.id,
-        billId: order.billId || null,
-        customerId: order.customerId || null,
-        documentType: 'order',
-        documentId: order.id,
-        accountingReference: `ORD-${order.id.slice(-6).toUpperCase()}`,
-        date: Date.now(),
-        timestamp: serverTimestamp(),
-      };
-
-      await Promise.allSettled([
-        addDoc(collection(db, 'stock_movements'), movementDoc),
-        addDoc(collection(db, 'stock_flow'), movementDoc),
-      ]);
+        timestamp: serverTimestamp()
+      });
     };
 
     const deductRecursive = async (itemId: string, itemName: string, qty: number) => {
@@ -1324,23 +643,7 @@ export default function POS({ onClose }: POSProps) {
               });
               await recordMovement(invDoc.id, invDoc.data().name, deductQty, currentStock, newStock);
             } else {
-              const legacyRef = doc(db, 'stock_item', ingredient.inventoryItemId);
-              const legacyDoc = await getDoc(legacyRef);
-              if (legacyDoc.exists()) {
-                const legacyName = String(legacyDoc.data().item_name || legacyDoc.data().name || ingredient.inventoryItemId);
-                const currentStock = Number(legacyDoc.data().qty ?? legacyDoc.data().running_balance ?? 0) || 0;
-                const deductQty = ingredient.quantity * qty;
-                const newStock = Math.max(0, currentStock - deductQty);
-
-                await setDoc(legacyRef, {
-                  qty: newStock,
-                  running_balance: newStock,
-                  updated_at: serverTimestamp(),
-                }, { merge: true });
-                await recordMovement(ingredient.inventoryItemId, legacyName, deductQty, currentStock, newStock);
-              } else {
-                await deductRecursive(ingredient.inventoryItemId, '', ingredient.quantity * qty);
-              }
+              await deductRecursive(ingredient.inventoryItemId, '', ingredient.quantity * qty);
             }
           }
         } else {
@@ -1356,26 +659,6 @@ export default function POS({ onClose }: POSProps) {
               });
               await recordMovement(document.id, document.data().name, qty, currentStock, newStock);
             }
-          } else {
-            const [legacyInventoryItems, legacyStockItems] = await Promise.all([
-              getDocs(query(collection(db, 'inventory_items'), where('name', '==', itemName))).catch(() => ({ empty: true, docs: [] as any[] })),
-              getDocs(query(collection(db, 'stock_item'), where('item_name', '==', itemName))).catch(() => ({ empty: true, docs: [] as any[] })),
-            ]);
-
-            const legacyDocs = [...(legacyInventoryItems.docs || []), ...(legacyStockItems.docs || [])];
-            for (const legacyDoc of legacyDocs) {
-              const legacyData = legacyDoc.data() as any;
-              const currentStock = Number(legacyData.stock ?? legacyData.qty ?? legacyData.running_balance ?? 0) || 0;
-              const newStock = Math.max(0, currentStock - qty);
-              await setDoc(legacyDoc.ref, {
-                stock: newStock,
-                qty: newStock,
-                running_balance: newStock,
-                lastUpdated: serverTimestamp(),
-                updated_at: serverTimestamp(),
-              }, { merge: true });
-              await recordMovement(legacyDoc.id, legacyData.name || legacyData.item_name || itemName, qty, currentStock, newStock);
-            }
           }
         }
       } else {
@@ -1390,19 +673,6 @@ export default function POS({ onClose }: POSProps) {
               lastUpdated: serverTimestamp()
             });
             await recordMovement(document.id, document.data().name, qty, currentStock, newStock);
-          }
-        } else {
-          const legacyStockSnap = await getDocs(query(collection(db, 'stock_item'), where('item_name', '==', itemName))).catch(() => ({ empty: true, docs: [] as any[] }));
-          for (const legacyDoc of legacyStockSnap.docs || []) {
-            const legacyData = legacyDoc.data() as any;
-            const currentStock = Number(legacyData.qty ?? legacyData.running_balance ?? 0) || 0;
-            const newStock = Math.max(0, currentStock - qty);
-            await setDoc(legacyDoc.ref, {
-              qty: newStock,
-              running_balance: newStock,
-              updated_at: serverTimestamp(),
-            }, { merge: true });
-            await recordMovement(legacyDoc.id, legacyData.item_name || itemName, qty, currentStock, newStock);
           }
         }
       }
@@ -1443,7 +713,6 @@ export default function POS({ onClose }: POSProps) {
   };
 
   const settleBill = async () => {
-    if (!ensureActiveSession()) return;
     setIsSubmitting(true);
     try {
       let amountToPay = settlingOrder.total;
@@ -1516,12 +785,7 @@ export default function POS({ onClose }: POSProps) {
         timestamp: new Date().toISOString(),
         cashAmount: cashAmount,
         cardAmount: cardAmount,
-        onlineAmount: onlineAmount,
-        methodType: paymentMethod,
-        currencyCode: 'AED',
-        exchangeRate: 1,
-        gateway: paymentMethod === 'online' ? 'online-gateway' : 'internal-pos',
-        processingFeeAmount: 0
+        onlineAmount: onlineAmount
       };
       const updatedPayments = [...currentPayments, newPayment];
 
@@ -1536,15 +800,15 @@ export default function POS({ onClose }: POSProps) {
           for (const ingredient of menuItem.recipe) {
             const invItem = inventory.find(inv => inv.id === ingredient.inventoryItemId);
             if (invItem) {
-              // Inventory costs are already stored in cents throughout the app.
-              const costCents = Math.round(invItem.averageCost || invItem.costPerUnit || 0);
+              // Inventory cost is often dollars, convert to cents
+              const costCents = (invItem.averageCost || invItem.costPerUnit || 0) * 100;
               totalCOGS += costCents * (ingredient.quantity || 0) * (item.quantity || 0) * paymentRatio;
             }
           }
         } else {
           const invItem = inventory.find(inv => inv.name === item.name);
           if (invItem) {
-            const costCents = Math.round(invItem.averageCost || invItem.costPerUnit || 0);
+            const costCents = (invItem.averageCost || invItem.costPerUnit || 0) * 100;
             totalCOGS += costCents * (item.quantity || 0) * paymentRatio;
           }
         }
@@ -1637,9 +901,6 @@ export default function POS({ onClose }: POSProps) {
           date: new Date().toISOString().split('T')[0],
           reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
-          orderId: settlingOrder.id,
-          billId: settlingOrder.billId || null,
-          customerId: settlingOrder.customerId || null,
           timestamp: serverTimestamp(),
           lines: journalLines
         });
@@ -1710,9 +971,6 @@ export default function POS({ onClose }: POSProps) {
           date: new Date().toISOString().split('T')[0],
           reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
-          orderId: settlingOrder.id,
-          billId: settlingOrder.billId || null,
-          customerId: settlingOrder.customerId || null,
           timestamp: serverTimestamp(),
           lines: journalLines
         });
@@ -1773,8 +1031,6 @@ export default function POS({ onClose }: POSProps) {
           reference: `ORD-${settlingOrder.id.slice(-6).toUpperCase()}`,
           description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           orderId: settlingOrder.id,
-          billId: settlingOrder.billId || null,
-          customerId: settlingOrder.customerId || null,
           timestamp: serverTimestamp(),
           lines: journalLines
         });
@@ -1820,12 +1076,6 @@ export default function POS({ onClose }: POSProps) {
   };
 
   const updateOrderStatus = async (orderId: string, status: Order['status']) => {
-    if (!ensureActiveSession()) return;
-
-    const existingOrder = orders.find((o) => o.id === orderId) || null;
-    // Optimistic UI: reflect status immediately instead of waiting for polling refresh.
-    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status } : o)));
-
     try {
       const orderRef = doc(db, 'orders', orderId);
       const updates: any = { status };
@@ -1834,79 +1084,55 @@ export default function POS({ onClose }: POSProps) {
         updates.invoicedAt = serverTimestamp();
       }
 
-      if (status === 'finalized' && existingOrder && !['finalized', 'cancelled'].includes(String(existingOrder.status || '').toLowerCase())) {
-        await deductInventory(existingOrder);
-      }
-
       await updateDoc(orderRef, updates);
-
-      void addDoc(collection(db, 'order_state_history'), {
-        orderId,
-        status,
-        changedByUserId: user?.uid || null,
-        changedByUserEmail: user?.email || null,
-        changedAt: serverTimestamp()
-      }).catch(() => {});
 
       // Auto-print KOT on "Start Order" (confirmed -> preparing)
       if (status === 'preparing') {
         const order = orders.find(o => o.id === orderId);
-        if (order) {
-          window.setTimeout(() => {
-            printKOT(order);
-          }, 0);
-        }
+        if (order) printKOT(order);
       }
 
       if (status === 'finalized' || status === 'cancelled') {
-        const tableId = existingOrder?.tableId;
+        const orderDoc = await getDoc(doc(db, 'orders', orderId));
+        const orderData = orderDoc.exists() ? orderDoc.data() : null;
+        const tableId = orderData?.tableId;
 
         if (tableId) {
           const tableIds = String(tableId).split(',');
-          const releasePromises = tableIds
-            .map((tId) => tId.trim())
-            .filter(Boolean)
-            .map((trimmedId) => updateDoc(doc(db, 'tables', trimmedId), { status: 'available' }));
-          void Promise.allSettled(releasePromises);
+          for (const tId of tableIds) {
+            const trimmedId = tId.trim();
+            if (trimmedId) {
+              await updateDoc(doc(db, 'tables', trimmedId), { status: 'available' });
+            }
+          }
         }
 
         // Automated Reversal logic for Accounting
         if (status === 'cancelled') {
-          void (async () => {
-            try {
-              const orderDoc = await getDoc(doc(db, 'orders', orderId));
-              const order = orderDoc.exists() ? orderDoc.data() : null;
-              if (order && order.total > 0) {
-                const today = new Date().toISOString().split('T')[0];
-                await addDoc(collection(db, 'journal_entries'), {
-                  date: today,
-                  reference: `VOID-ORD-${orderId.slice(-6).toUpperCase()}`,
-                  description: `SYSTEM VOID: Order #${orderId.slice(-6).toUpperCase()} cancelled`,
-                  orderId,
-                  billId: order.billId || null,
-                  customerId: order.customerId || null,
-                  documentType: 'order_void',
-                  documentId: orderId,
-                  lines: [
-                    { accountId: 'sales', accountName: 'Sales Revenue', debit: Math.round(order.total * 100), credit: 0 },
-                    { accountId: 'cash', accountName: 'Cash/Bank', debit: 0, credit: Math.round(order.total * 100) }
-                  ],
-                  timestamp: serverTimestamp(),
-                  reversal: true,
-                  originalOrderId: orderId
-                });
-              }
-            } catch (accError) {
-              console.error('Accounting reversal failed:', accError);
+          try {
+            const orderDoc = await getDoc(doc(db, 'orders', orderId));
+            const order = orderDoc.exists() ? orderDoc.data() : null;
+            if (order && order.total > 0) {
+              const today = new Date().toISOString().split('T')[0];
+              await addDoc(collection(db, 'journal_entries'), {
+                date: today,
+                reference: `VOID-ORD-${orderId.slice(-6).toUpperCase()}`,
+                description: `SYSTEM VOID: Order #${orderId.slice(-6).toUpperCase()} cancelled`,
+                lines: [
+                  { accountId: 'sales', accountName: 'Sales Revenue', debit: Math.round(order.total * 100), credit: 0 },
+                  { accountId: 'cash', accountName: 'Cash/Bank', debit: 0, credit: Math.round(order.total * 100) }
+                ],
+                timestamp: serverTimestamp(),
+                reversal: true,
+                originalOrderId: orderId
+              });
             }
-          })();
+          } catch (accError) {
+            console.error('Accounting reversal failed:', accError);
+          }
         }
       }
     } catch (err) {
-      // Rollback optimistic update on failure.
-      if (existingOrder) {
-        setOrders((prev) => prev.map((o) => (o.id === orderId ? existingOrder : o)));
-      }
       handleFirestoreError(err, OperationType.UPDATE, `orders/${orderId}`);
     }
   };
@@ -1929,56 +1155,30 @@ export default function POS({ onClose }: POSProps) {
   const handleUpdateDiscount = async () => {
     if (!activeOrder) return;
     setDiscountError('');
-
-    const discountVal = parseFloat(discountInput) || 0;
-    if (discountVal <= 0) {
-      setDiscountError('Discount must be greater than zero');
+    if (clearanceCodeInput !== '1234') {
+      setDiscountError('Invalid clearance code');
       return;
     }
-
-    if (discountTypeInput === 'percentage' && discountVal > 100) {
-      setDiscountError('Percentage discount cannot exceed 100');
-      return;
-    }
-
     try {
+      const discountVal = parseFloat(discountInput) || 0;
       const subtotal = activeOrder.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-      const requiresApproval =
-        (discountTypeInput === 'percentage' && discountVal > discountApprovalThresholdPercent) ||
-        (discountTypeInput === 'amount' && discountVal > discountApprovalThresholdAmount);
+      let finalTotal = subtotal;
 
-      const applyDiscount = async () => {
-        let finalTotal = subtotal;
-
-        if (discountTypeInput === 'percentage') {
-          finalTotal = Math.round(subtotal * (1 - discountVal / 100));
-        } else {
-          finalTotal = Math.max(0, subtotal - Math.round(discountVal * 100));
-        }
-
-        await updateDoc(doc(db, 'orders', activeOrder.id), {
-          discount: discountVal,
-          discountType: discountTypeInput,
-          total: finalTotal
-        });
-
-        setIsDiscountModalOpen(false);
-        setActiveOrder(null);
-        setDiscountInput('');
-      };
-
-      if (requiresApproval) {
-        requestManagerClearance(
-          `discount_override_${discountTypeInput}`,
-          () => {
-            applyDiscount().catch((err) => handleFirestoreError(err, OperationType.UPDATE, `orders/${activeOrder.id}`));
-          },
-          activeOrder.id
-        );
-        return;
+      if (discountTypeInput === 'percentage') {
+        finalTotal = Math.round(subtotal * (1 - discountVal / 100));
+      } else {
+        finalTotal = Math.max(0, subtotal - Math.round(discountVal * 100)); // discountVal is in dollars, subtotal in cents
       }
 
-      await applyDiscount();
+      await updateDoc(doc(db, 'orders', activeOrder.id), {
+        discount: discountVal,
+        discountType: discountTypeInput,
+        total: finalTotal
+      });
+      setIsDiscountModalOpen(false);
+      setActiveOrder(null);
+      setDiscountInput('');
+      setClearanceCodeInput('');
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${activeOrder.id}`);
     }
@@ -2071,117 +1271,75 @@ export default function POS({ onClose }: POSProps) {
   // Active statuses shown in POS
   const ACTIVE_STATUSES = ['awaiting-confirmation', 'pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill'];
   
-  const filteredOrders = useMemo(() => {
-    return orders.filter(o => {
-      // Determine if today
-      const today = new Date().toISOString().split('T')[0];
-      const orderDate = o.createdAt?.toDate ? o.createdAt.toDate().toISOString().split('T')[0] : '';
-      const isToday = orderDate === today;
+  const filteredOrders = orders.filter(o => {
+    // Determine if today
+    const today = new Date().toISOString().split('T')[0];
+    const orderDate = o.createdAt?.toDate ? o.createdAt.toDate().toISOString().split('T')[0] : '';
+    const isToday = orderDate === today;
 
-      // Handle Completed (finalized) filter
-      if (filter === 'finalized') {
-        return (o.status === 'finalized' || o.status === 'Finalized') && isToday;
-      }
+    // Handle Completed (finalized) filter
+    if (filter === 'finalized') {
+      return (o.status === 'finalized' || o.status === 'Finalized') && isToday;
+    }
 
-      // Permanently hide finalized and cancelled orders from other POS filters
-      if (o.status === 'finalized' || o.status === 'cancelled' || o.status === 'Finalized' || o.status === 'Cancelled') return false;
-      const statusMatch = filter === 'all' || o.status === filter;
-      const typeMatch = orderTypeFilter === 'all' || o.orderType === orderTypeFilter;
+    // Permanently hide finalized and cancelled orders from other POS filters
+    if (o.status === 'finalized' || o.status === 'cancelled' || o.status === 'Finalized' || o.status === 'Cancelled') return false;
+    const statusMatch = filter === 'all' || o.status === filter;
+    const typeMatch = orderTypeFilter === 'all' || o.orderType === orderTypeFilter;
 
-      const matchesOrderId = !searchOrderId ||
-        (o.orderNo?.toString() || '').includes(searchOrderId) ||
-        (o.id || '').toLowerCase().includes(searchOrderId.toLowerCase());
-      const matchesKotNo = !searchKotNo || (o.kotNo?.toString() || '').includes(searchKotNo);
-      const matchesCustomerName = !searchCustomerName || (o.customerName || '').toLowerCase().includes(searchCustomerName.toLowerCase());
-      const matchesCustomerPhone = !searchCustomerPhone || (o.customerPhone || '').includes(searchCustomerPhone);
-      const matchesTableNumber = !searchTableNumber || (o.tableNumber || '').toLowerCase().includes(searchTableNumber.toLowerCase());
+    const matchesOrderId = !searchOrderId ||
+      (o.orderNo?.toString() || '').includes(searchOrderId) ||
+      (o.id || '').toLowerCase().includes(searchOrderId.toLowerCase());
+    const matchesKotNo = !searchKotNo || (o.kotNo?.toString() || '').includes(searchKotNo);
+    const matchesCustomerName = !searchCustomerName || (o.customerName || '').toLowerCase().includes(searchCustomerName.toLowerCase());
+    const matchesCustomerPhone = !searchCustomerPhone || (o.customerPhone || '').includes(searchCustomerPhone);
+    const matchesTableNumber = !searchTableNumber || (o.tableNumber || '').toLowerCase().includes(searchTableNumber.toLowerCase());
 
-      return statusMatch && typeMatch && matchesOrderId && matchesKotNo && matchesCustomerName && matchesCustomerPhone && matchesTableNumber;
-    });
-  }, [orders, filter, orderTypeFilter, searchOrderId, searchKotNo, searchCustomerName, searchCustomerPhone, searchTableNumber]);
+    return statusMatch && typeMatch && matchesOrderId && matchesKotNo && matchesCustomerName && matchesCustomerPhone && matchesTableNumber;
+  });
 
   const getStatusColor = (status: Order['status'] | 'all') => {
     if (status === 'all') return 'bg-primary text-white';
-    return mergedOrderStates[status]?.colorClass || 'bg-muted text-white';
+    switch (status) {
+      case 'awaiting-confirmation': return 'bg-yellow-500 text-white';
+      case 'paid': return 'bg-blue-500 text-white';
+      case 'confirmed': return 'bg-amber-500 text-white';
+      case 'preparing': return 'bg-orange-500 text-white';
+      case 'serving': return 'bg-purple-500 text-white';
+      case 'done-serving': return 'bg-indigo-500 text-white';
+      case 'awaiting-bill': return 'bg-pink-500 text-white';
+      case 'finalized': return 'bg-emerald-500 text-white';
+      case 'cancelled': return 'bg-red-500 text-white';
+      default: return 'bg-muted0 text-white';
+    }
   };
 
   const getStatusText = (status: Order['status']) => {
-    return mergedOrderStates[status]?.actionLabel || mergedOrderStates[status]?.label || status;
-  };
-
-  const getStatusLabel = (status: Order['status']) => {
-    return mergedOrderStates[status]?.label || status;
+    switch (status) {
+      case 'awaiting-confirmation': return 'Confirm Order';
+      case 'confirmed': return 'Start Preparing';
+      case 'preparing': return 'Start Serving';
+      case 'serving': return 'Done Serving';
+      case 'done-serving': return 'Awaiting Bill';
+      case 'awaiting-bill': return 'Finalize';
+      default: return status;
+    }
   };
 
   const getNextStatus = (status: Order['status']): Order['status'] | null => {
-    return mergedOrderStates[status]?.nextStatus || null;
-  };
-
-  const persistCartSubEntities = async (cartId: string, orderRefId?: string) => {
-    if (!activeSession) return;
-    try {
-      await addDoc(collection(db, 'pos_session_cart_data'), {
-        cartId,
-        sessionId: activeSession.id,
-        userId: user?.uid || null,
-        orderId: orderRefId || null,
-        noOfPeopleDineIn: Number(occupancyInput || 0),
-        orderSubmitted: Boolean(orderRefId),
-        modifyOrderSubmitted: Boolean(editingOrder),
-        waiterCalled: false,
-        createdAt: serverTimestamp()
-      });
-
-      for (const { item, quantity } of currentOrderItems) {
-        await addDoc(collection(db, 'pos_session_cart_item'), {
-          cartId,
-          sessionId: activeSession.id,
-          itemId: item.id,
-          itemName: item.name,
-          quantityValue: quantity,
-          customPrice: item.price,
-          discountAmount: discountTypeInput === 'amount' ? Number(discountInput || 0) * 100 : 0,
-          discountPerc: discountTypeInput === 'percentage' ? Number(discountInput || 0) : 0,
-          note: noteInput || '',
-          createdAt: serverTimestamp()
-        });
-      }
-
-      if (selectedCustomer?.id) {
-        await addDoc(collection(db, 'pos_session_customer'), {
-          cartId,
-          sessionId: activeSession.id,
-          customerId: selectedCustomer.id,
-          createdAt: serverTimestamp()
-        });
-      }
-
-      await addDoc(collection(db, 'pos_session_waiter'), {
-        cartId,
-        sessionId: activeSession.id,
-        waiterId: user?.uid || null,
-        waiterName: currentStaffName,
-        createdAt: serverTimestamp()
-      });
-
-      if (selectedTable?.id) {
-        await addDoc(collection(db, 'pos_session_table'), {
-          cartId,
-          sessionId: activeSession.id,
-          tableId: selectedTable.id,
-          tableName: selectedTable.name,
-          createdAt: serverTimestamp()
-        });
-      }
-    } catch (err) {
-      if (!isPermissionDenied(err)) {
-        console.warn('pos_session sub-entity persistence failed', err);
-      }
+    switch (status) {
+      case 'awaiting-confirmation': return 'confirmed';
+      case 'confirmed': return 'preparing';
+      case 'preparing': return 'serving';
+      case 'serving': return 'done-serving';
+      case 'done-serving': return 'awaiting-bill';
+      case 'awaiting-bill': return 'finalized';
+      default: return null;
     }
   };
 
   return (
-    <div className="h-[100dvh] bg-background flex flex-col overflow-hidden text-foreground">
+    <div className={`${isDeveloper ? 'h-[calc(100dvh-2rem)]' : 'h-[100dvh]'} bg-background flex flex-col overflow-hidden text-foreground`}>
       {/* POS Header */}
       <div className="bg-card border-b border-border shadow-sm z-10 relative">
         {/* Top Row: Logo & Main Actions */}
@@ -2208,54 +1366,21 @@ export default function POS({ onClose }: POSProps) {
             <div className="hidden sm:block">
               <DigitalClock />
             </div>
-            <div className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl border text-[9px] font-black uppercase tracking-widest ${activeSession ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/40' : 'bg-rose-500/10 text-rose-500 border-rose-500/40'}`}>
-              <span className={`w-2 h-2 rounded-full ${activeSession ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-              {activeSession ? 'Shift Active' : 'Shift Closed'}
-            </div>
-            {activeSession && (
-              <div className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl border text-[9px] font-black uppercase tracking-widest ${activeSession.onBreak ? 'bg-amber-500/15 text-amber-600 border-amber-500/40' : 'bg-blue-500/10 text-blue-500 border-blue-500/30'}`}>
-                {activeSession.onBreak ? `On Break ${formatDurationClock(activeBreakElapsedMs)}` : `On Duty ${formatDurationClock(totalBreakMsLive)} Brk`}
-              </div>
-            )}
           </div>
 
           {/* New Order Creation Buttons & Shift Controls */}
           <div className="flex items-center flex-wrap justify-center lg:justify-end gap-2 w-full lg:w-auto">
-            <div className="hidden 2xl:grid grid-cols-4 gap-2 shrink-0 mr-2">
-              <div className="px-3 py-2 rounded-xl border border-border bg-background min-w-[86px]">
-                <p className="text-[8px] font-black text-muted-foreground uppercase tracking-widest">Active</p>
-                <p className="text-sm font-black text-foreground leading-none">{sessionOrderStats.activeCount}</p>
-              </div>
-              <div className="px-3 py-2 rounded-xl border border-border bg-background min-w-[86px]">
-                <p className="text-[8px] font-black text-muted-foreground uppercase tracking-widest">Settled</p>
-                <p className="text-sm font-black text-foreground leading-none">{sessionOrderStats.settledCount}</p>
-              </div>
-              <div className="px-3 py-2 rounded-xl border border-border bg-background min-w-[86px]">
-                <p className="text-[8px] font-black text-muted-foreground uppercase tracking-widest">Avg Ticket</p>
-                <p className="text-sm font-black text-foreground leading-none">{formatCurrency(sessionOrderStats.avgTicket)}</p>
-              </div>
-              <div className="px-3 py-2 rounded-xl border border-border bg-background min-w-[86px]">
-                <p className="text-[8px] font-black text-muted-foreground uppercase tracking-widest">Sales</p>
-                <p className="text-sm font-black text-foreground leading-none">{formatCurrency(sessionOrderStats.grossSales)}</p>
-              </div>
+            <div className="text-right hidden xl:block shrink-0 mr-2">
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">Active Orders</p>
+              <p className="text-lg font-black text-foreground leading-none">{orders.length}</p>
             </div>
 
             <button
               onClick={async () => {
-                if (!activeSession) {
-                  setIsStartingSession(true);
-                  return;
-                }
-
                 const today = new Date().toISOString().split('T')[0];
-                const sessionStartMs = activeSession.startedAt?.toDate
-                  ? activeSession.startedAt.toDate().getTime()
-                  : 0;
-
                 const todayOrders = orders.filter(o => {
                   const orderDate = o.createdAt?.toDate ? o.createdAt.toDate().toISOString().split('T')[0] : '';
-                  const createdMs = o.createdAt?.toDate ? o.createdAt.toDate().getTime() : 0;
-                  return createdMs >= sessionStartMs && orderDate === today && (o.status?.toLowerCase() === 'paid' || o.status?.toLowerCase() === 'finalized');
+                  return orderDate === today && (o.status?.toLowerCase() === 'paid' || o.status?.toLowerCase() === 'finalized');
                 });
 
                 const totals = todayOrders.reduce((acc, o) => {
@@ -2282,7 +1407,6 @@ export default function POS({ onClose }: POSProps) {
                 }, { total: 0, cash: 0, card: 0, online: 0, openBill: 0, count: todayOrders.length });
 
                 setSessionTotals(totals);
-                setSessionVarianceInput('');
                 setIsEndingSession(true);
               }}
               className="flex items-center gap-1.5 px-3 py-2 bg-rose-500 text-white border border-rose-600 rounded-xl hover:bg-rose-600 transition-all text-[9px] font-black uppercase tracking-tight shadow-md shadow-rose-500/20"
@@ -2290,37 +1414,9 @@ export default function POS({ onClose }: POSProps) {
               <Clock size={14} /> End Shift
             </button>
 
-            {activeSession && (
-              <button
-                onClick={() => toggleSessionBreak(!activeSession.onBreak)}
-                disabled={isBreakSubmitting}
-                className={`flex items-center gap-1.5 px-3 py-2 border rounded-xl transition-all text-[9px] font-black uppercase tracking-tight shadow-md disabled:opacity-60 disabled:cursor-not-allowed ${activeSession.onBreak ? 'bg-amber-500 text-white border-amber-600 shadow-amber-500/20' : 'bg-sky-500 text-white border-sky-600 shadow-sky-500/20'}`}
-              >
-                <Clock size={14} /> {isBreakSubmitting ? 'Saving...' : activeSession.onBreak ? 'End Break' : 'Start Break'}
-              </button>
-            )}
-
-            {activeSession && (
-              <>
-                <button
-                  onClick={() => recordCashDrawerMovement('in')}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white border border-emerald-700 rounded-xl hover:bg-emerald-700 transition-all text-[9px] font-black uppercase tracking-tight shadow-md shadow-emerald-600/20"
-                >
-                  <Banknote size={14} /> Cash In
-                </button>
-                <button
-                  onClick={() => recordCashDrawerMovement('out')}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-orange-600 text-white border border-orange-700 rounded-xl hover:bg-orange-700 transition-all text-[9px] font-black uppercase tracking-tight shadow-md shadow-orange-600/20"
-                >
-                  <Banknote size={14} /> Cash Out
-                </button>
-              </>
-            )}
-
             {systemSettings?.enableTakeaway !== false && (
               <button
                 onClick={() => {
-                  if (!ensureActiveSession()) return;
                   setOrderTypeInput('take-out');
                   setSelectedTable(null);
                   setPosStep('menu');
@@ -2334,7 +1430,6 @@ export default function POS({ onClose }: POSProps) {
             {systemSettings?.enableDelivery !== false && (
               <button
                 onClick={() => {
-                  if (!ensureActiveSession()) return;
                   setOrderTypeInput('delivery');
                   setSelectedTable(null);
                   setPosStep('menu');
@@ -2347,7 +1442,6 @@ export default function POS({ onClose }: POSProps) {
             )}
             <button
               onClick={() => {
-                if (!ensureActiveSession()) return;
                 setOrderTypeInput('pickup');
                 setSelectedTable(null);
                 setPosStep('menu');
@@ -2359,7 +1453,6 @@ export default function POS({ onClose }: POSProps) {
             </button>
             <button
               onClick={() => {
-                if (!ensureActiveSession()) return;
                 setOrderTypeInput('dine-in');
                 setPosStep('tables');
                 setIsNewOrderModalOpen(true);
@@ -2370,27 +1463,6 @@ export default function POS({ onClose }: POSProps) {
             </button>
           </div>
         </div>
-
-        {activeSession && (
-          <div className="px-4 py-2 lg:px-6 border-b border-border/50 bg-background/70">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-              <div className="px-3 py-2 rounded-xl border border-border bg-card">
-                <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Current Cash</p>
-                <p className="text-sm font-black text-foreground leading-none">{formatCurrency(activeSession.currentCash ?? activeSession.openingFloat ?? 0)}</p>
-              </div>
-              <div className="px-3 py-2 rounded-xl border border-border bg-card">
-                <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Break Time</p>
-                <p className="text-sm font-black text-foreground leading-none">
-                  {activeSession.onBreak ? `${formatDurationClock(activeBreakElapsedMs)} (running)` : formatDurationClock(totalBreakMsLive)}
-                </p>
-              </div>
-              <div className="px-3 py-2 rounded-xl border border-border bg-card">
-                <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Last Session Update</p>
-                <p className="text-xs font-bold text-foreground truncate">{sessionActionMessage || 'No recent session actions.'}</p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Bottom Row: Search & Filters */}
         <div className="px-4 py-3 lg:px-6 lg:py-3 flex flex-col 2xl:flex-row items-center gap-4 bg-muted/30">
@@ -2452,7 +1524,7 @@ export default function POS({ onClose }: POSProps) {
 
           {/* Status Filters */}
           <div className="flex flex-wrap gap-1 w-full xl:w-auto xl:justify-end shrink-0">
-            {(['all', ...(Object.keys(defaultOrderStates) as Order['status'][])] as const).map((s) => (
+            {(['all', 'awaiting-confirmation', 'pending', 'confirmed', 'preparing', 'serving', 'done-serving', 'awaiting-bill', 'finalized'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilter(s)}
@@ -2461,7 +1533,7 @@ export default function POS({ onClose }: POSProps) {
                     : 'bg-card text-muted-foreground hover:text-foreground hover:bg-background transition-all'
                   }`}
               >
-                {s === 'all' ? 'all' : (s === 'finalized' ? 'Completed' : getStatusLabel(s))}
+                {s === 'finalized' ? 'Completed' : s.replace('-', ' ')}
               </button>
             ))}
           </div>
@@ -3336,7 +2408,7 @@ export default function POS({ onClose }: POSProps) {
                   {/* Status Bar */}
                   <div className={`px-4 py-2 flex items-center justify-center gap-2 ${getStatusColor(order.status)}`}>
                     <CheckCircle2 size={14} />
-                    <span className="text-[10px] font-black uppercase tracking-widest">{getStatusLabel(order.status)}</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest">{order.status}</span>
                   </div>
 
                   {/* Items List */}
@@ -3397,9 +2469,10 @@ export default function POS({ onClose }: POSProps) {
                     {order.status !== 'finalized' ? (
                       <button
                         onClick={() => {
-                          requestManagerClearance('order_cancellation', () => {
+                          setClearanceCallback(() => () => {
                             updateOrderStatus(order.id, 'cancelled');
-                          }, order.id);
+                          });
+                          setIsClearanceModalOpen(true);
                         }}
                         className="flex flex-col items-center gap-1 bg-red-600 text-white py-2 rounded-xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
                       >
@@ -3538,9 +2611,13 @@ export default function POS({ onClose }: POSProps) {
               className="w-full bg-background/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
               placeholder={discountTypeInput === 'amount' ? "Enter discount amount" : "Enter discount percentage (%)"}
             />
-            <p className="text-[11px] font-bold text-muted-foreground">
-              Manager approval is required above {discountApprovalThresholdPercent}% or {currencySymbol} {discountApprovalThresholdAmount}.
-            </p>
+            <input
+              type="password"
+              value={clearanceCodeInput}
+              onChange={(e) => setClearanceCodeInput(e.target.value)}
+              className="w-full bg-background/50 border-2 border-border rounded-xl px-4 py-3 font-bold text-foreground focus:border-primary outline-none transition-all"
+              placeholder="Manager Clearance Code (1234)"
+            />
             <div className="flex gap-2">
               <button onClick={() => setIsDiscountModalOpen(false)} className="flex-1 py-3 bg-background text-muted-foreground hover:bg-background/80 rounded-xl font-bold transition-all">Cancel</button>
               <button onClick={handleUpdateDiscount} className="flex-1 py-3 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl font-bold transition-all">Save</button>
@@ -3749,9 +2826,6 @@ export default function POS({ onClose }: POSProps) {
                 </div>
                 <h3 className="text-xl font-black text-foreground uppercase tracking-tight">Manager Clearance</h3>
                 <p className="text-sm text-muted-foreground font-medium">Enter clearance code to proceed</p>
-                {clearanceReason && (
-                  <p className="text-[10px] font-black text-primary uppercase tracking-widest mt-2">{clearanceReason.replace(/_/g, ' ')}</p>
-                )}
               </div>
 
               <div className="space-y-4">
@@ -3764,7 +2838,14 @@ export default function POS({ onClose }: POSProps) {
                   className="w-full bg-background/50 border-2 border-border rounded-2xl px-6 py-4 text-center text-3xl font-black tracking-[1em] focus:border-primary outline-none transition-all"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
-                      void approveManagerClearance();
+                      if (clearanceCodeInput === '1234') {
+                        clearanceCallback?.();
+                        setIsClearanceModalOpen(false);
+                        setClearanceCodeInput('');
+                        setClearanceCallback(null);
+                      } else {
+                        alert("Invalid Clearance Code");
+                      }
                     }
                   }}
                 />
@@ -3775,8 +2856,6 @@ export default function POS({ onClose }: POSProps) {
                       setIsClearanceModalOpen(false);
                       setClearanceCodeInput('');
                       setClearanceCallback(null);
-                      setClearanceReason('');
-                      setClearanceOrderId(null);
                     }}
                     className="py-4 rounded-2xl font-black uppercase tracking-widest text-xs text-muted-foreground hover:bg-background transition-all"
                   >
@@ -3784,7 +2863,14 @@ export default function POS({ onClose }: POSProps) {
                   </button>
                   <button
                     onClick={() => {
-                      void approveManagerClearance();
+                      if (clearanceCodeInput === '1234') {
+                        clearanceCallback?.();
+                        setIsClearanceModalOpen(false);
+                        setClearanceCodeInput('');
+                        setClearanceCallback(null);
+                      } else {
+                        alert("Invalid Clearance Code");
+                      }
                     }}
                     className="py-4 bg-primary text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
                   >
@@ -3836,111 +2922,55 @@ export default function POS({ onClose }: POSProps) {
               </div>
             </div>
 
-            <div className="p-4 bg-background rounded-2xl border border-border mb-6 space-y-3">
-              <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Cash Reconciliation</p>
-              <div className="grid grid-cols-2 gap-3 text-xs font-bold">
-                <div>
-                  <p className="text-muted-foreground uppercase">Opening Float</p>
-                  <p className="text-foreground">{formatCurrency(activeSession?.openingFloat || 0)}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground uppercase">Expected Cash</p>
-                  <p className="text-foreground">{formatCurrency((activeSession?.openingFloat || 0) + sessionTotals.cash)}</p>
-                </div>
-              </div>
-              <div>
-                <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Actual Cash Counted</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={sessionVarianceInput}
-                  onChange={(e) => setSessionVarianceInput(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full mt-1 px-3 py-2 rounded-xl border border-border bg-card text-sm font-bold"
-                />
-              </div>
-            </div>
-
             <div className="space-y-3">
               <button
                 onClick={async () => {
                   try {
-                    if (!activeSession) {
-                      setIsEndingSession(false);
-                      setIsStartingSession(true);
-                      return;
-                    }
-
-                    const expectedCash = (activeSession.openingFloat || 0) + sessionTotals.cash;
-                    const countedCash = Math.round((parseFloat(sessionVarianceInput) || 0) * 100);
-                    const cashVariance = countedCash - expectedCash;
-
                     // 1. Generate Z-Report
                     const today = new Date().toISOString().split('T')[0];
                     await addDoc(collection(db, 'zreports'), {
-                      sessionId: activeSession.id,
                       date: today,
                       totalSales: sessionTotals.total,
                       cashSales: sessionTotals.cash,
                       cardSales: sessionTotals.card,
                       onlineSales: sessionTotals.online,
                       openBillSales: sessionTotals.openBill,
-                      openingFloat: activeSession.openingFloat || 0,
-                      expectedCash,
-                      countedCash,
-                      cashVariance,
                       totalOrders: sessionTotals.count,
                       generatedBy: user?.email || 'Unknown',
                       createdAt: serverTimestamp()
                     });
 
-                    // 2. Handle HR clock-out if applicable
-                    try {
-                      await ensureHrClockOutForShiftEnd();
-                    } catch (hrErr) {
-                      console.warn('POS shift ended, but HR clock-out sync failed:', hrErr);
+                    // 2. Handle Clock-out if applicable
+                    const shiftsRef = collection(db, 'shifts');
+                    const activeShiftQuery = query(
+                      shiftsRef,
+                      where('staffId', '==', user?.uid),
+                      where('status', '==', 'present'),
+                      limit(1)
+                    );
+                    const shiftSnap = await getDocs(activeShiftQuery);
+                    if (!shiftSnap.empty) {
+                      const shiftDoc = shiftSnap.docs[0];
+                      await updateDoc(doc(db, 'shifts', shiftDoc.id), {
+                        clockOut: serverTimestamp(),
+                        status: 'off'
+                      });
                     }
 
                     // Generate Z-Report document for accountability
                     await addDoc(collection(db, 'z_reports'), {
-                      sessionId: activeSession.id,
                       date: new Date().toISOString().split('T')[0],
                       terminationTime: new Date().toISOString(),
                       totals: sessionTotals,
-                      openingFloat: activeSession.openingFloat || 0,
-                      expectedCash,
-                      countedCash,
-                      cashVariance,
-                      terminalId: activeSession.terminalId || 'POS-TERMINAL',
+                      terminalId: 'POS-TERMINAL',
                       storeId: 'MAIN-STORE',
                       userId: user?.uid,
                       status: 'finalized'
                     });
 
-                    if (!activeSession.id.startsWith('local-')) {
-                      try {
-                        await updateDoc(doc(db, 'pos_sessions', activeSession.id), {
-                          status: 'closed',
-                          endedAt: serverTimestamp(),
-                          totals: sessionTotals,
-                          openingFloat: activeSession.openingFloat || 0,
-                          expectedCash,
-                          countedCash,
-                          cashVariance
-                        });
-                      } catch (err) {
-                        console.warn('pos_sessions update failed during shift close:', err);
-                      }
-                    }
-
-                    persistSession(null);
-                    setActiveSession(null);
-
                     setIsEndingSession(false);
                     onClose();
                   } catch (err) {
-                    console.error('Shift termination failed:', err);
                     handleFirestoreError(err, OperationType.CREATE, 'zreport_termination');
                   }
                 }}
@@ -3955,187 +2985,6 @@ export default function POS({ onClose }: POSProps) {
                 Back to POS
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {isStartingSession && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-card w-full max-w-md rounded-[2.5rem] p-8 border border-border shadow-2xl animate-in zoom-in-95">
-            <div className="flex items-center justify-end mb-2">
-              <button
-                onClick={() => setIsStartingSession(false)}
-                className="p-2 rounded-xl text-muted-foreground hover:bg-background transition-all"
-                aria-label="Close start shift modal"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="text-center mb-8">
-              <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                <Clock size={40} />
-              </div>
-              <h2 className="text-3xl font-black text-foreground uppercase tracking-tight">Start Shift</h2>
-              <p className="text-muted-foreground font-bold text-sm uppercase tracking-widest mt-1">Open your POS session</p>
-            </div>
-
-            {shiftStartError && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-xs font-bold">
-                {shiftStartError}
-              </div>
-            )}
-
-            <div className="space-y-4 mb-8">
-              <div>
-                <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Staff User</label>
-                <div className="w-full mt-1 px-3 py-2 rounded-xl border border-border bg-muted/50 text-sm font-bold text-foreground">
-                  {currentStaffName}
-                </div>
-              </div>
-              <div>
-                <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Terminal ID</label>
-                {selectableTerminals.length > 0 ? (
-                  <select
-                    value={terminalIdInput}
-                    onChange={(e) => setTerminalIdInput(e.target.value)}
-                    className="w-full mt-1 px-3 py-2 rounded-xl border border-border bg-background text-sm font-bold"
-                  >
-                    {selectableTerminals.map((terminal) => (
-                      <option key={terminal.id} value={terminal.id}>
-                        {terminal.name ? `${terminal.name} (${terminal.id})` : terminal.id}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={terminalIdInput}
-                    onChange={(e) => setTerminalIdInput(e.target.value)}
-                    placeholder="POS terminal"
-                    className="w-full mt-1 px-3 py-2 rounded-xl border border-border bg-background text-sm font-bold"
-                  />
-                )}
-              </div>
-              <div>
-                <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Opening Float</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={openingFloatInput}
-                  onChange={(e) => setOpeningFloatInput(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full mt-1 px-3 py-2 rounded-xl border border-border bg-background text-sm font-bold"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Shift Note (Optional)</label>
-                <textarea
-                  value={openingNoteInput}
-                  onChange={(e) => setOpeningNoteInput(e.target.value)}
-                  placeholder="Notes for this shift"
-                  className="w-full mt-1 px-3 py-2 rounded-xl border border-border bg-background text-sm font-bold h-20 resize-none"
-                />
-              </div>
-            </div>
-
-            <button
-              onClick={async () => {
-                setShiftStartError('');
-
-                try {
-                  if (!user) {
-                    setShiftStartError('User session not found. Please login again.');
-                    return;
-                  }
-
-                  const sessionStaffName = String(currentStaffName || '').trim();
-                  if (!sessionStaffName) {
-                    setShiftStartError('Staff user name is required. Please update the user profile name.');
-                    return;
-                  }
-
-                  const normalizedTerminalId = terminalIdInput.trim();
-                  if (!normalizedTerminalId) {
-                    setShiftStartError('Terminal is required.');
-                    return;
-                  }
-
-                  if (selectableTerminals.length > 0 && !selectableTerminals.some((t) => t.id === normalizedTerminalId)) {
-                    setShiftStartError('Please select a valid terminal.');
-                    return;
-                  }
-
-                  setIsOpeningShift(true);
-
-                  let sessionId = `local-${user.uid}-${Date.now()}`;
-                  try {
-                    const sessionRef = await addDoc(collection(db, 'pos_sessions'), {
-                      userId: user.uid,
-                      userEmail: user.email || '',
-                      staffName: sessionStaffName,
-                      status: 'open',
-                      openingFloat: Math.round((parseFloat(openingFloatInput) || 0) * 100),
-                      currentCash: Math.round((parseFloat(openingFloatInput) || 0) * 100),
-                      onBreak: false,
-                      totalBreakMs: 0,
-                      openingNote: openingNoteInput.trim() || null,
-                      startedAt: serverTimestamp(),
-                      storeId: profile?.storeId || null,
-                      terminalId: normalizedTerminalId,
-                      terminalName: selectableTerminals.find((t) => t.id === normalizedTerminalId)?.name || normalizedTerminalId
-                    });
-                    sessionId = sessionRef.id;
-                  } catch (err) {
-                    if (!isPermissionDenied(err)) {
-                      console.error('Failed to create POS session:', err);
-                    }
-                    console.warn('pos_sessions create denied; using local POS session fallback.');
-                  }
-
-                  const sessionTerminal = selectableTerminals.find((t) => t.id === normalizedTerminalId);
-                  const createdSession: PosSession = {
-                    id: sessionId,
-                    userId: user.uid,
-                    staffName: sessionStaffName,
-                    status: 'open',
-                    openingFloat: Math.round((parseFloat(openingFloatInput) || 0) * 100),
-                    currentCash: Math.round((parseFloat(openingFloatInput) || 0) * 100),
-                    onBreak: false,
-                    totalBreakMs: 0,
-                    openingNote: openingNoteInput.trim() || undefined,
-                    terminalId: normalizedTerminalId,
-                    terminalName: sessionTerminal?.name || normalizedTerminalId,
-                    startedAt: new Date().toISOString(),
-                  };
-
-                  persistSession(createdSession);
-                  setActiveSession(createdSession);
-
-                  try {
-                    await ensureHrClockInForShiftStart(sessionStaffName);
-                  } catch (hrErr) {
-                    console.warn('POS shift opened, but HR clock-in sync failed:', hrErr);
-                  }
-
-                  setOpeningFloatInput('');
-                  setOpeningNoteInput('');
-                  setCashierNameInput('');
-                  setTerminalIdInput(profileTerminalId || rawProfileTerminalToken || 'POS-TERMINAL');
-                  setIsStartingSession(false);
-                } catch (err) {
-                  console.error('Failed to open shift:', err);
-                  setShiftStartError(err instanceof Error ? err.message : 'Failed to open shift. Please try again.');
-                } finally {
-                  setIsOpeningShift(false);
-                }
-              }}
-              disabled={isOpeningShift}
-              className="w-full py-4 bg-primary text-white rounded-2xl font-black uppercase tracking-[0.2em] shadow-xl shadow-primary/20 hover:scale-[1.02] transition-all disabled:opacity-60 disabled:scale-100"
-            >
-              {isOpeningShift ? 'Opening...' : 'Open Shift'}
-            </button>
           </div>
         </div>
       )}

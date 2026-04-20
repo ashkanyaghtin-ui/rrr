@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp, where, runTransaction, increment } from 'firebase/firestore';
-import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp, where, runTransaction, increment } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from '../firebase';
 import { 
   Calendar, Plus, Phone, Users, Clock, CheckCircle2, X, ChevronLeft, ChevronRight,
@@ -43,10 +42,6 @@ function formatDisplayDate(dateStr: string): string {
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-function safeText(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
 function WaitlistCard({ w, onEdit, onDelete, onStatusChange }: { key?: any, w: any, onEdit: () => void, onDelete: () => void, onStatusChange: (status: string) => void }) {
   const waitTime = w.createdAt?.toDate ? Math.floor((new Date().getTime() - w.createdAt.toDate().getTime()) / 60000) : 0;
   const isOverdue = waitTime > w.quotedTime;
@@ -60,15 +55,15 @@ function WaitlistCard({ w, onEdit, onDelete, onStatusChange }: { key?: any, w: a
         </div>
         <div>
           <div className="flex items-center gap-2">
-            <h4 className="font-black text-foreground">{safeText(w.customerName) || 'Guest'}</h4>
+            <h4 className="font-black text-foreground">{w.customerName}</h4>
             <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${w.status === 'waiting' ? 'bg-amber-100 text-amber-700' : w.status === 'seated' ? 'bg-emerald-100 text-emerald-700' : 'bg-zinc-100 text-zinc-600'}`}>{w.status}</span>
           </div>
           <div className="flex items-center gap-3 text-sm text-muted-foreground mt-1">
-            <span className="flex items-center gap-1"><Users size={14} /> {Number(w.guests) || 0}</span>
-            <span className="flex items-center gap-1"><Phone size={14} /> {safeText(w.customerPhone) || 'Unknown'}</span>
+            <span className="flex items-center gap-1"><Users size={14} /> {w.guests}</span>
+            <span className="flex items-center gap-1"><Phone size={14} /> {w.customerPhone}</span>
             <span className="flex items-center gap-1"><Clock size={14} /> Quoted: {w.quotedTime}m</span>
           </div>
-          {w.notes && <p className="text-xs text-muted-foreground mt-2 italic">"{safeText(w.notes)}"</p>}
+          {w.notes && <p className="text-xs text-muted-foreground mt-2 italic">"{w.notes}"</p>}
         </div>
       </div>
       <div className="flex items-center gap-2">
