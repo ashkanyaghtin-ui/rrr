@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp, getDocs, where } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp, getDocs, where } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
 import { db, OperationType, handleFirestoreError } from '../firebase';
 import {
   Users, Clock, Calendar, DollarSign, Download, Plus, X, Edit2, Trash2,

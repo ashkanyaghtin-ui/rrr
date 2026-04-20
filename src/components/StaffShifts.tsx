@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, onSnapshot, query, where, addDoc, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, addDoc, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
 import { UserCheck, Clock, CheckCircle2, Play, Square } from 'lucide-react';
 import { Shift } from '../types';
 

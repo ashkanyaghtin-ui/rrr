@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, where } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, deleteDoc, doc, query, orderBy, where, setDoc } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
 import { Customer, CustomerGroup, Order } from '../types';
 import { Users, Plus, Edit2, Trash2, Save, X, Search, MapPin, CreditCard, Tag, FileText, CheckCircle2, Download, FileSpreadsheet, Upload } from 'lucide-react';
 import { formatCurrency } from '../utils/format';
@@ -10,12 +11,15 @@ import { serverTimestamp } from 'firebase/firestore';
 
 export default function CRM({ systemSettings }: { systemSettings?: any }) {
   const currencySymbol = systemSettings?.currency || 'AED';
+  const sharedCustomerSubsidiaryName = 'Customers Subsidiary';
+  const sharedCustomerSubsidiaryId = 'shared-customers';
   
   const formatCurrency = (amount: number) => {
     return `${currencySymbol} ${(amount / 100).toFixed(2)}`;
   };
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [groups, setGroups] = useState<CustomerGroup[]>([]);
+  const [subsidiaries, setSubsidiaries] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'customers' | 'groups'>('customers');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -29,7 +33,8 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
     addresses: [],
     balance: 0,
     loyaltyPoints: 0,
-    groupId: ''
+    groupId: '',
+    subsidiaryId: ''
   });
 
   // Group Form State
@@ -45,23 +50,29 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
 
   // Open Bills State
   const [viewingCustomerId, setViewingCustomerId] = useState<string | null>(null);
+  const [viewingCustomerAccountId, setViewingCustomerAccountId] = useState<string | null>(null);
   const [customerOrders, setCustomerOrders] = useState<Order[]>([]);
+  const [allJournalEntries, setAllJournalEntries] = useState<any[]>([]);
+  const [allJournal, setAllJournal] = useState<any[]>([]);
+  const [allBills, setAllBills] = useState<any[]>([]);
+
+  const activeCustomerOrderTarget = viewingCustomerId || viewingCustomerAccountId;
 
   useEffect(() => {
-    if (!viewingCustomerId) {
+    if (!activeCustomerOrderTarget) {
       setCustomerOrders([]);
       return;
     }
     const q = query(
       collection(db, 'orders'),
-      where('customerId', '==', viewingCustomerId),
+      where('customerId', '==', activeCustomerOrderTarget),
       orderBy('createdAt', 'desc')
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setCustomerOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'orders'));
     return () => unsubscribe();
-  }, [viewingCustomerId]);
+  }, [activeCustomerOrderTarget]);
   useEffect(() => {
     const q = query(collection(db, 'customers'), orderBy('name'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -78,26 +89,107 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const q = query(collection(db, 'subsidiaries'), orderBy('name'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setSubsidiaries(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'subsidiaries'));
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubJournalEntries = onSnapshot(collection(db, 'journal_entries'), (snapshot) => {
+      setAllJournalEntries(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'journal_entries'));
+
+    const unsubJournal = onSnapshot(collection(db, 'journal'), (snapshot) => {
+      setAllJournal(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'journal'));
+
+    const unsubBills = onSnapshot(collection(db, 'bills'), (snapshot) => {
+      setAllBills(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'bills'));
+
+    return () => {
+      unsubJournalEntries();
+      unsubJournal();
+      unsubBills();
+    };
+  }, []);
+
+  const ensureCustomerSubsidiary = async (customerId: string, customerName: string, existingSubsidiaryId?: string) => {
+    const existingShared = subsidiaries.find(sub => sub.id === sharedCustomerSubsidiaryId || (sub.name === sharedCustomerSubsidiaryName && sub.type === 'customer'));
+    const subsidiaryId = existingShared?.id || sharedCustomerSubsidiaryId;
+
+    await setDoc(doc(db, 'subsidiaries', subsidiaryId), {
+      name: sharedCustomerSubsidiaryName,
+      type: 'customer',
+      parentAccountCode: '1103',
+      parentAccountName: 'Accounts Receivable',
+      sourceCollection: 'customers',
+      sourceId: 'shared-customers',
+      isSharedBucket: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await updateDoc(doc(db, 'customers', customerId), {
+      subsidiaryId,
+      updatedAt: serverTimestamp(),
+    });
+
+    return subsidiaryId;
+  };
+
+  const linkCustomerToSubsidiary = async (customerId: string, customerName: string, chosenSubsidiaryId?: string) => {
+    return ensureCustomerSubsidiary(customerId, customerName, chosenSubsidiaryId);
+  };
+
+  const ensureCustomerLedgerAccount = async (customerId: string, customerName: string) => {
+    const accountCode = `1103-${customerId.slice(0, 4).toUpperCase()}`;
+    await setDoc(doc(db, 'ledgerGroups', accountCode), {
+      code: accountCode,
+      name: `AR - ${customerName}`,
+      type: 'Asset',
+      isAccount: true,
+      parentGroupId: '1103',
+      sourceCollection: 'customers',
+      sourceId: customerId,
+      description: `Accounts Receivable for ${customerName}`,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await updateDoc(doc(db, 'customers', customerId), {
+      ledgerAccountCode: accountCode,
+      updatedAt: serverTimestamp(),
+    });
+
+    return accountCode;
+  };
+
   const handleSaveCustomer = async () => {
     if (!customerForm.name || !customerForm.phone) return;
     try {
       if (editingCustomerId) {
         await updateDoc(doc(db, 'customers', editingCustomerId), customerForm);
+
+        const existingCustomer = customers.find(c => c.id === editingCustomerId) as any;
+        await linkCustomerToSubsidiary(
+          editingCustomerId,
+          customerForm.name || existingCustomer?.name || 'Customer',
+          String(customerForm.subsidiaryId || existingCustomer?.subsidiaryId || '') || undefined
+        );
+        await ensureCustomerLedgerAccount(editingCustomerId, customerForm.name || existingCustomer?.name || 'Customer');
       } else {
         const custDoc = await addDoc(collection(db, 'customers'), customerForm);
-        // Auto-create Accounts Receivable ledger mapping
-        await addDoc(collection(db, 'ledger_groups'), {
-          code: `1103-${custDoc.id.slice(0,4).toUpperCase()}`,
-          name: `AR - ${customerForm.name}`,
-          type: 'Asset',
-          parentCode: '1103',
-          isAccount: true,
-          description: `Accounts Receivable for ${customerForm.name}`
-        });
+
+        await linkCustomerToSubsidiary(custDoc.id, customerForm.name || 'Customer', String(customerForm.subsidiaryId || '') || undefined);
+        await ensureCustomerLedgerAccount(custDoc.id, customerForm.name || 'Customer');
       }
       setIsAddingCustomer(false);
       setEditingCustomerId(null);
-      setCustomerForm({ name: '', phone: '', email: '', addresses: [], balance: 0, loyaltyPoints: 0, groupId: '' });
+      setCustomerForm({ name: '', phone: '', email: '', addresses: [], balance: 0, loyaltyPoints: 0, groupId: '', subsidiaryId: '' });
     } catch (err) {
       handleFirestoreError(err, editingCustomerId ? OperationType.UPDATE : OperationType.CREATE, 'customers');
     }
@@ -200,16 +292,9 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
           };
 
           const custDoc = await addDoc(collection(db, 'customers'), customerData);
-          
-          // Auto-create AR ledger
-          await addDoc(collection(db, 'ledger_groups'), {
-            code: `1103-${custDoc.id.slice(0,4).toUpperCase()}`,
-            name: `AR - ${customerData.name}`,
-            type: 'Asset',
-            parentCode: '1103',
-            isAccount: true,
-            description: `Accounts Receivable for ${customerData.name}`
-          });
+
+          await linkCustomerToSubsidiary(custDoc.id, customerData.name, String((customerData as any).subsidiaryId || '') || undefined);
+          await ensureCustomerLedgerAccount(custDoc.id, customerData.name);
           
           importedCount++;
         }
@@ -226,6 +311,40 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
     c.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
     c.phone.includes(searchQuery)
   );
+
+  const selectedCustomer = viewingCustomerAccountId ? customers.find(c => c.id === viewingCustomerAccountId) : null;
+  const selectedCustomerSubsidiaryId = (selectedCustomer as any)?.subsidiaryId || '';
+  const selectedCustomerBills = selectedCustomer
+    ? allBills.filter(b => b.customerId === selectedCustomer.id || b.customerId === viewingCustomerAccountId || b.vendorId === selectedCustomer.id)
+    : [];
+  const selectedCustomerJournalEntries = selectedCustomer
+    ? allJournalEntries.filter(entry => {
+        const customerName = String(selectedCustomer.name || '').toLowerCase();
+        const customerLedgerCode = String((selectedCustomer as any).ledgerAccountCode || `1103-${String(selectedCustomer.id || '').slice(0, 4).toUpperCase()}`).toLowerCase();
+        const lines = Array.isArray(entry.lines) ? entry.lines : [];
+        const lineMatches = lines.some((line: any) =>
+          String(line.accountId || '').toLowerCase() === customerLedgerCode ||
+          String(line.accountName || '').toLowerCase().includes('accounts receivable') ||
+          String(line.accountName || '').toLowerCase().includes(customerName)
+        );
+        const desc = String(entry.description || '').toLowerCase();
+        return entry.customerId === selectedCustomer.id ||
+          entry.relatedCustomerId === selectedCustomer.id ||
+          lineMatches ||
+          desc.includes(customerName);
+      })
+    : [];
+  const selectedCustomerJournal = selectedCustomer
+    ? allJournal.filter(entry => {
+        const customerName = String(selectedCustomer.name || '').toLowerCase();
+        const customerLedgerCode = String((selectedCustomer as any).ledgerAccountCode || `1103-${String(selectedCustomer.id || '').slice(0, 4).toUpperCase()}`).toLowerCase();
+        const desc = String(entry.description || '').toLowerCase();
+        return entry.customerId === selectedCustomer.id ||
+          entry.relatedCustomerId === selectedCustomer.id ||
+          String(entry.accountId || '').toLowerCase() === customerLedgerCode ||
+          desc.includes(customerName);
+      })
+    : [];
 
   return (
     <div className="space-y-8 pb-20">
@@ -349,6 +468,21 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
                     <option value="">No Special Group</option>
                     {groups.map(g => (
                       <option key={g.id} value={g.id}>{g.name} ({g.discountPercentage}% Discount)</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Shared Customer Subsidiary</label>
+                  <select
+                    value={customerForm.subsidiaryId || ''}
+                    onChange={(e) => setCustomerForm({ ...customerForm, subsidiaryId: e.target.value })}
+                    className="w-full p-4 bg-background border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bold appearance-none cursor-pointer"
+                  >
+                    <option value="">Use shared customers bucket</option>
+                    {subsidiaries.map(sub => (
+                      <option key={sub.id} value={sub.id}>
+                        {sub.name} {sub.type ? `(${sub.type})` : ''}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -560,6 +694,13 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
                           <FileText size={18} />
                         </button>
                         <button
+                          onClick={() => setViewingCustomerAccountId(customer.id)}
+                          className="p-2 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-xl transition-colors"
+                          title="View Customer Account"
+                        >
+                          <CreditCard size={18} />
+                        </button>
+                        <button
                           onClick={() => handleDeleteCustomer(customer.id)}
                           className="p-2 text-muted-foreground hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
                         >
@@ -628,6 +769,84 @@ export default function CRM({ systemSettings }: { systemSettings?: any }) {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedCustomer && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+          <div className="bg-card rounded-3xl w-full max-w-5xl p-8 space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b border-border pb-4">
+              <div>
+                <h3 className="text-2xl font-black text-foreground tracking-tight">Customer Account: {selectedCustomer.name}</h3>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mt-1">
+                  Subsidiary: {selectedCustomerSubsidiaryId || 'Not linked'} | Ledger: {(selectedCustomer as any).ledgerAccountCode || 'Not linked'}
+                </p>
+              </div>
+              <button onClick={() => setViewingCustomerAccountId(null)} className="p-2 hover:bg-background rounded-full transition-colors">
+                <X size={24} className="text-muted-foreground" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="p-4 border border-border rounded-2xl">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Orders</p>
+                <p className="text-2xl font-black text-foreground mt-2">{customerOrders.length}</p>
+              </div>
+              <div className="p-4 border border-border rounded-2xl">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Bills</p>
+                <p className="text-2xl font-black text-foreground mt-2">{selectedCustomerBills.length}</p>
+              </div>
+              <div className="p-4 border border-border rounded-2xl">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Journal Entries</p>
+                <p className="text-2xl font-black text-foreground mt-2">{selectedCustomerJournalEntries.length}</p>
+              </div>
+              <div className="p-4 border border-border rounded-2xl">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Journal Records</p>
+                <p className="text-2xl font-black text-foreground mt-2">{selectedCustomerJournal.length}</p>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Customer Bills</h4>
+                <div className="space-y-2">
+                  {selectedCustomerBills.length === 0 ? <p className="text-sm text-muted-foreground">No customer bills found.</p> : selectedCustomerBills.map((bill: any) => (
+                    <div key={bill.id} className="p-4 border border-border rounded-xl flex justify-between gap-4">
+                      <div>
+                        <p className="font-bold text-foreground">{bill.description || `Bill ${bill.id.slice(-6).toUpperCase()}`}</p>
+                        <p className="text-xs text-muted-foreground">status: {bill.status || 'open'}</p>
+                      </div>
+                      <p className="font-black text-foreground">{formatCurrency(Number(bill.totalAmount || bill.amount || 0))}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Journal Entries</h4>
+                <div className="space-y-2">
+                  {selectedCustomerJournalEntries.length === 0 ? <p className="text-sm text-muted-foreground">No journal entries found.</p> : selectedCustomerJournalEntries.map((entry: any) => (
+                    <div key={entry.id} className="p-4 border border-border rounded-xl">
+                      <p className="font-bold text-foreground">{entry.description || `Entry ${entry.id.slice(-6).toUpperCase()}`}</p>
+                      <p className="text-xs text-muted-foreground mt-1">ref: {entry.reference || 'n/a'} | subsidiary: {entry.subsidiaryId || 'n/a'}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Journal Records</h4>
+                <div className="space-y-2">
+                  {selectedCustomerJournal.length === 0 ? <p className="text-sm text-muted-foreground">No journal records found.</p> : selectedCustomerJournal.map((entry: any) => (
+                    <div key={entry.id} className="p-4 border border-border rounded-xl flex justify-between gap-4">
+                      <p className="font-bold text-foreground">{entry.description || 'Journal record'}</p>
+                      <p className="font-black text-foreground">{formatCurrency(Number(entry.amount || 0))}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>

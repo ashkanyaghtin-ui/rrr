@@ -1,7 +1,9 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Download, Filter, FileText, Scale, History, DollarSign, Activity, TrendingUp, Calendar, ChevronDown, ChevronUp, Search, FileSpreadsheet, PieChart, Wallet, Package, ArrowLeft, Plus, User, LayoutGrid, Save, Settings, Maximize2, Minimize2, Columns, Eye, EyeOff, Share2, Trash2, X } from 'lucide-react';
 import { db } from '../firebase';
-import { collection, addDoc, onSnapshot, query, where, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, query, where, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
+import * as XLSX from 'xlsx';
 
 interface ReportTemplate {
   id?: string;
@@ -20,7 +22,7 @@ interface ReportTemplate {
 }
 
 interface Props {
-  reportType: 'profit_loss' | 'balance_sheet' | 'cash_flow' | 'equity' | 'trial_balance' | 'general_ledger' | 'inventory_report' | 'sales_report' | 'pos_summary' | 'sales_by_category' | 'sales_by_item' | 'tax_report' | 'waiter_performance' | 'raw_material_consumption';
+  reportType: 'profit_loss' | 'balance_sheet' | 'cash_flow' | 'equity' | 'trial_balance' | 'general_ledger' | 'customer_balance' | 'inventory_report' | 'sales_report' | 'pos_summary' | 'sales_by_category' | 'sales_by_item' | 'tax_report' | 'waiter_performance' | 'raw_material_consumption';
   journalEntries: any[];
   journal: any[];
   orders: any[];
@@ -54,6 +56,122 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
   const [showFilters, setShowFilters] = useState(true);
   const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+
+  const normalizeToCents = (value: any, referenceTotalCents?: number) => {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num) || num === 0) return 0;
+
+    const abs = Math.abs(num);
+
+    // Decimal values are almost always major currency units.
+    if (!Number.isInteger(num)) return Math.round(num * 100);
+
+    // Larger integer values are likely already in cents.
+    if (abs >= 1000) return Math.round(num);
+
+    // Typical cent values like 300, 500, 1200 end with 00.
+    if (abs % 100 === 0) return Math.round(num);
+
+    // For small integer values in sales rows, treat as major units.
+    if (referenceTotalCents && referenceTotalCents >= 1000 && abs <= referenceTotalCents / 10) {
+      return Math.round(num * 100);
+    }
+
+    // If reference is also small, both are likely major units.
+    if (referenceTotalCents && Math.abs(referenceTotalCents) < 1000) {
+      return Math.round(num * 100);
+    }
+
+    // Without a reference, small integer monetary values are usually major units in legacy data.
+    if (!referenceTotalCents && abs < 1000) {
+      return Math.round(num * 100);
+    }
+
+    return Math.round(num);
+  };
+
+  const normalizeInventoryCostToCents = (value: any) => {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num) || num === 0) return 0;
+    if (!Number.isInteger(num)) return Math.round(num * 100);
+    return Math.round(num);
+  };
+
+  const isHistoricalSaleEntry = (entry: any) => {
+    const reference = String(entry?.reference || '').toUpperCase();
+    const description = String(entry?.description || '').toLowerCase();
+    return Boolean(entry?.orderId) || entry?.sourceType === 'order' || reference.startsWith('ORD-') || reference.startsWith('POS-') || description.includes('sale');
+  };
+
+  const normalizeHistoricalCogsLines = (entry: any, lines: any[]) => {
+    if (!Array.isArray(lines) || lines.length === 0) return lines;
+    if (entry?.cogsRepairV1) return lines;
+    if (!isHistoricalSaleEntry(entry)) return lines;
+
+    const saleLikeLine = (line: any) => {
+      const accountId = String(line?.accountId || '');
+      const accountName = String(line?.accountName || line?.account || '').toLowerCase();
+      return accountId === '5101' || accountId === '1105' || accountName.includes('cost of goods sold') || accountName.includes('inventory');
+    };
+
+    const saleLines = lines.filter(saleLikeLine);
+    const largestSaleLine = saleLines.reduce((max, line) => Math.max(max, Math.max(normalizeToCents(line.debit || 0), normalizeToCents(line.credit || 0))), 0);
+    const revenueLine = lines.find((line: any) => {
+      const accountId = String(line?.accountId || '');
+      const accountName = String(line?.accountName || line?.account || '').toLowerCase();
+      return accountId === '4101' || accountName.includes('sales revenue') || accountName.includes('revenue');
+    });
+    const revenueAmount = revenueLine ? Math.max(normalizeToCents(revenueLine.debit || 0), normalizeToCents(revenueLine.credit || 0)) : 0;
+
+    const looksInflated = largestSaleLine >= 10000 && largestSaleLine % 100 === 0 && (revenueAmount === 0 || largestSaleLine > revenueAmount * 3);
+    if (!looksInflated) return lines;
+
+    return lines.map((line: any) => {
+      if (!saleLikeLine(line)) return line;
+      const debit = normalizeToCents(line.debit || 0);
+      const credit = normalizeToCents(line.credit || 0);
+      if (debit > 0) return { ...line, debit: Math.round(debit / 100), credit: 0 };
+      if (credit > 0) return { ...line, debit: 0, credit: Math.round(credit / 100) };
+      return line;
+    });
+  };
+
+  const calculateOrderDiscountCents = (order: any, subtotalCents: number, orderTotalCents: number) => {
+    const rawDiscount = Number(order?.discount || 0);
+    if (!Number.isFinite(rawDiscount) || rawDiscount <= 0) return 0;
+
+    const discountType = String(order?.discountType || '').toLowerCase();
+    const isPercentageDiscount = discountType === 'percentage' || discountType === 'percent' || discountType === 'pct';
+
+    if (isPercentageDiscount) {
+      // Support both 20 (20%) and 0.2 (20%) legacy storage shapes.
+      const normalizedPercent = rawDiscount <= 1 ? rawDiscount * 100 : rawDiscount;
+      const percent = Math.max(0, Math.min(100, normalizedPercent));
+      return Math.min(subtotalCents, Math.round(subtotalCents * (percent / 100)));
+    }
+
+    return Math.min(subtotalCents, normalizeToCents(rawDiscount, orderTotalCents || subtotalCents));
+  };
+
+  const isMoneyColumn = (columnName: string) => {
+    const col = columnName.toLowerCase();
+    return col.includes('amount') ||
+      col.includes('debit') ||
+      col.includes('credit') ||
+      col.includes('balance') ||
+      col.includes('tax') ||
+      col.includes('discount') ||
+      col.includes('gross') ||
+      col.includes('subtotal') ||
+      col === 'net' ||
+      col.includes('net ') ||
+      col.includes(' value') ||
+      col === 'cash' ||
+      col.includes('card') ||
+      col === 'other' ||
+      col.includes('cost') ||
+      col.includes('profit');
+  };
 
   // Fetch Subsidiaries, Classes, and Templates
   useEffect(() => {
@@ -146,13 +264,8 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
       return dateMatch && subsidiaryMatch && classMatch;
     };
 
-    // 1. AGGRESSIVE DEDUPLICATION: Prevent POS double-click bugs or React state duplicates
-    const dedupedJournalEntries = Array.from(new Map(
-      (journalEntries || []).map(e => {
-        const key = (e.orderId || e.reference) ? (e.orderId || e.reference) : e.id;
-        return [key, e];
-      })
-    ).values());
+    // Use stable document IDs for deduping so distinct transactions are never collapsed.
+    const dedupedJournalEntries = Array.from(new Map((journalEntries || []).map(e => [e.id, e])).values());
 
     const dedupedOrders = Array.from(new Map((orders || []).map(o => [o.id, o])).values());
     const dedupedJournal = Array.from(new Map((journal || []).map(j => [j.id, j])).values());
@@ -207,10 +320,13 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
 
     // 1. Process Formal Journal Entries (Source of Truth)
     processedData.journalEntries.forEach(entry => {
-      if (!entry.lines) return;
-      entry.lines.forEach((line: any) => {
+      const normalizedLines = normalizeHistoricalCogsLines(entry, entry.lines || []);
+      if (!normalizedLines.length) return;
+      normalizedLines.forEach((line: any) => {
         const type = getAccountType(line.accountId || '', line.account || line.accountName || '');
-        addBalance(line.account || line.accountName || 'Unknown Account', type, line.debit || 0, line.credit || 0);
+        const debitCents = normalizeToCents(line.debit || 0);
+        const creditCents = normalizeToCents(line.credit || 0);
+        addBalance(line.account || line.accountName || 'Unknown Account', type, debitCents, creditCents);
       });
     });
 
@@ -218,9 +334,9 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
     processedData.orders.forEach(order => {
       if (!processedData.formalLedgerOrderIds.has(order.id) && ['paid', 'finalized', 'completed'].includes(order.status)) {
         // order.total is stored in cents
-        const amountCents = Math.round(order.total || 0);
+        const amountCents = normalizeToCents(order.total || 0);
         const taxRate = systemSettings?.taxRate || 0;
-        const taxCents = order.taxAmount ? Math.round(order.taxAmount) : Math.round(amountCents - (amountCents / (1 + (taxRate / 100))));
+        const taxCents = order.taxAmount ? normalizeToCents(order.taxAmount, amountCents) : Math.round(amountCents - (amountCents / (1 + (taxRate / 100))));
         const netCents = amountCents - taxCents;
         
         const pMethod = (order.paymentMethod || 'cash').toLowerCase();
@@ -246,7 +362,7 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
       const isRevenue = eType === 'income' || eType === 'sale';
       const isRefund = eType === 'refund' || eType === 'revoke' || eType === 'void';
       // Manual journals store amount in cents
-      const amountCents = Math.round(entry.amount || 0);
+      const amountCents = normalizeToCents(entry.amount || 0);
       
       const pMethod = (entry.paymentMethod || 'cash').toLowerCase();
       const assetAccount = (pMethod === 'card' || pMethod === 'bank') ? 'Bank Accounts' : 'Cash on Hand';
@@ -273,8 +389,21 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
   }, [processedData, ledgerGroups]);
 
   const reportData = useMemo(() => {
-    const data: any = { profit_loss: [], balance_sheet: [], cash_flow: [], equity: [], trial_balance: [], general_ledger: [], inventory_report: [], sales_report: [], pos_summary: [], sales_by_category: [], sales_by_item: [], tax_report: [], waiter_performance: [], raw_material_consumption: [], revocations_voids: [] };
+    const data: any = { profit_loss: [], balance_sheet: [], cash_flow: [], equity: [], trial_balance: [], general_ledger: [], customer_balance: [], inventory_report: [], sales_report: [], pos_summary: [], sales_by_category: [], sales_by_item: [], tax_report: [], waiter_performance: [], raw_material_consumption: [], revocations_voids: [] };
     let totalRevenue = 0, totalExpense = 0, totalAssets = 0, totalLiabilities = 0, totalEquity = 0, totalSales = 0, totalPOSSales = 0, totalTax = 0, totalCOGS = 0, totalRevoked = 0;
+    const runningBalances: Record<string, number> = {};
+
+    const getAccountType = (accountId: string, accountName: string) => {
+      const group = ledgerGroups.find(g => g.id === accountId || g.name === accountName);
+      if (group) return group.type.charAt(0).toUpperCase() + group.type.slice(1).toLowerCase();
+      const nameLower = accountName.toLowerCase();
+      const idLower = accountId.toLowerCase();
+      if (nameLower.includes('revenue') || nameLower.includes('sales') || idLower.includes('sales') || idLower.includes('revenue')) return 'Revenue';
+      if (nameLower.includes('expense') || nameLower.includes('cost') || idLower.includes('expense') || idLower.includes('cogs')) return 'Expense';
+      if (nameLower.includes('liability') || nameLower.includes('payable') || nameLower.includes('tax') || idLower.includes('payable') || idLower.includes('tax')) return 'Liability';
+      if (nameLower.includes('equity') || nameLower.includes('capital') || nameLower.includes('retained') || idLower.includes('equity')) return 'Equity';
+      return 'Asset';
+    };
 
     const getCategoryName = (idOrName: string, itemId?: string, itemName?: string) => {
       let catIdOrName = idOrName;
@@ -350,25 +479,56 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
 
     processedData.journalEntries.forEach(entry => {
       const subsidiaryName = subsidiaries.find(s => s.id === entry.subsidiaryId)?.name || entry.subsidiary || 'N/A';
+      const subsidiaryType = subsidiaries.find(s => s.id === entry.subsidiaryId)?.type || (entry.sourceType === 'supplier' ? 'Supplier' : entry.sourceType === 'customer' ? 'Customer' : 'N/A');
       const className = classes.find(c => c.id === entry.classId)?.name || entry.class || 'N/A';
+      const transactionId = entry.orderId || entry.billId || entry.vendorId || entry.supplierId || entry.customerId || entry.reference || entry.id;
       
       (entry.lines || []).forEach((line: any) => {
+        const accountName = line.accountName || line.account || 'Unknown Account';
+        const entryType = getAccountType(line.accountId || '', accountName);
+        const debitCents = normalizeToCents(line.debit || 0);
+        const creditCents = normalizeToCents(line.credit || 0);
+        const signedBalanceDelta = (entryType === 'Asset' || entryType === 'Expense') ? debitCents - creditCents : creditCents - debitCents;
+        runningBalances[accountName] = (runningBalances[accountName] || 0) + signedBalanceDelta;
         data.general_ledger.push({ 
-          Date: new Date(entry.date).toLocaleDateString(), 
-          Reference: entry.reference, 
-          Description: entry.description, 
-          Account: line.accountName, 
-          Debit: line.debit || 0, 
-          Credit: line.credit || 0,
+          'Voucher No': entry.reference || transactionId,
+          'Entity Type': entry.sourceType || entry.type || 'Journal Entry',
+          Date: new Date(entry.date || entry.timestamp?.toDate?.() || Date.now()).toLocaleDateString(), 
+          'Ledger Account': accountName, 
+          'Subsidiary Account': subsidiaryName,
+          'Subsidiary Type': subsidiaryType,
+          Debit: debitCents,
+          Credit: creditCents,
+          Balance: runningBalances[accountName],
           Subsidiary: subsidiaryName,
-          Class: className
+          Class: className,
+          SourceType: entry.sourceType || 'journal_entry',
+          TransactionId: transactionId,
+          OrderId: entry.orderId || '',
+          BillId: entry.billId || '',
+          CustomerId: entry.customerId || '',
+          VendorId: entry.vendorId || entry.supplierId || '',
+          SubsidiaryId: entry.subsidiaryId || '',
+          ClassId: entry.classId || '',
+          JournalEntryId: entry.id || '',
+          DocumentType: entry.documentType || '',
+          DocumentId: entry.documentId || '',
+          AccountingReference: entry.accountingReference || '',
+          'Amount Narration': line.memo || entry.description || '',
+          Memo: entry.memo || entry.reference || ''
         });
       });
     });
 
+    data.customer_balance = data.general_ledger.filter((row: any) => {
+      const ledgerName = String(row['Ledger Account'] || '').toLowerCase();
+      const subsidiaryType = String(row['Subsidiary Type'] || '').toLowerCase();
+      return ledgerName.includes('receivable') || subsidiaryType === 'customer' || Boolean(row.CustomerId);
+    });
+
     inventory.forEach(item => {
       const stock = item.stock || item.quantity || 0;
-      const cost = item.averageCost || item.costPerUnit || item.cost || 0;
+      const cost = normalizeInventoryCostToCents(item.averageCost || item.costPerUnit || item.cost || 0);
       const type = item.category === 'finished_good' ? 'Finished Good' : 'Raw Material';
       data.inventory_report.push({ 
         Item: item.name, 
@@ -393,34 +553,63 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
       const isRevoked = order.status === 'cancelled' || order.status === 'refunded';
       if (['paid', 'finalized', 'completed', 'cancelled', 'refunded'].includes(order.status)) {
         // order.total is already in cents
-        const amount = Math.round(order.total || 0);
+        const amount = normalizeToCents(order.total || 0);
         if (!isRevoked) totalSales += amount;
         else totalRevoked += amount;
 
         const taxRate = systemSettings?.taxRate || 0;
-        const taxVal = order.taxAmount ? Math.round(order.taxAmount) : Math.round(amount - (amount / (1 + (taxRate / 100))));
+        const taxVal = order.taxAmount ? normalizeToCents(order.taxAmount, amount) : Math.round(amount - (amount / (1 + (taxRate / 100))));
         if (!isRevoked) totalTax += taxVal;
 
         const safeItems = order.items || [];
         const uniqueCategories = Array.from(new Set(safeItems.map((i: any) => getCategoryName(i.category, i.itemId, i.name)))).join(', ');
+        const subtotal = Math.round(safeItems.reduce((sum: number, item: any) => sum + (normalizeToCents(item.price, amount) * (item.quantity || 0)), 0));
+        const discountCents = calculateOrderDiscountCents(order, subtotal, amount);
+        const grossAmount = isRevoked ? -amount : amount;
+        const netAmount = grossAmount - (isRevoked ? -taxVal : taxVal) - discountCents;
+        const paymentMethodUpper = order.paymentMethod?.toUpperCase() || 'CASH';
 
         const reportRow = { 
-          Date: new Date(order.createdAt?.seconds * 1000 || Date.now()).toLocaleDateString(), 
-          OrderID: order.id.slice(0, 8), 
+          ID: order.id,
+          'Voucher No': order.id,
+          OrderId: order.id,
+          BillId: order.billId || '',
+          CustomerId: order.customerId || '',
+          SalespersonId: order.salespersonId || order.waiterId || '',
+          Type: 'Sales',
+          'Recorded Date': new Date(order.createdAt?.seconds * 1000 || Date.now()).toLocaleString(),
+          'Sales Date': new Date(order.createdAt?.seconds * 1000 || Date.now()).toLocaleString(),
+          'From Sales Order': order.source === 'manual' ? 'No' : 'Yes',
           'Order No': order.orderNo || 'N/A',
-          'KOT No': order.kotNo || 'N/A',
+          'Order Type': order.orderType?.toUpperCase() || 'DINE-IN',
+          'Order Date': new Date(order.createdAt?.seconds * 1000 || Date.now()).toLocaleString(),
+          Source: order.source || 'POS',
+          'Destination/Customer': order.customerName || 'Walk-in',
+          Salesperson: order.waiter || 'N/A',
+          'By Staff': order.waiter || 'N/A',
+          Subtotal: subtotal,
+          Discount: discountCents,
+          'Net Amount': netAmount,
+          'Tax Amount': isRevoked ? -taxVal : taxVal,
+          'Gross Amount': grossAmount,
+          'COGS Amount': 0,
+          'Payment Status': order.status.toUpperCase(),
+          'Payment Methods': paymentMethodUpper,
+          'Payment Dates': new Date(order.createdAt?.seconds * 1000 || Date.now()).toLocaleString(),
+          Cash: paymentMethodUpper === 'CASH' ? grossAmount : 0,
+          'Credit Card': paymentMethodUpper === 'CREDIT CARD' ? grossAmount : 0,
+          'Debit Card': paymentMethodUpper === 'DEBIT CARD' ? grossAmount : 0,
+          Other: (paymentMethodUpper !== 'CASH' && paymentMethodUpper !== 'CREDIT CARD' && paymentMethodUpper !== 'DEBIT CARD') ? grossAmount : 0,
+          'Items Sold': safeItems.map((item: any) => `${item.name} (Qty: ${item.quantity || 0})`).join(', '),
+          Categories: uniqueCategories || 'Uncategorized',
           Customer: order.customerName || 'Walk-in',
-          Type: order.orderType?.toUpperCase() || 'DINE-IN',
-          Table: order.tableNumber || 'N/A',
-          Guests: order.occupancy || 0,
-          Total: isRevoked ? -amount : amount, 
-          Tax: isRevoked ? -taxVal : taxVal, 
-          Discount: Math.round(order.discount || 0),
-          Net: (isRevoked ? -amount : amount) - (isRevoked ? -taxVal : taxVal) - Math.round(order.discount || 0),
-          Categories: uniqueCategories || 'Uncategorized', 
-          'Payment Method': order.paymentMethod?.toUpperCase() || 'CASH', 
           Waiter: order.waiter || 'N/A',
-          Status: order.status.toUpperCase()
+          Status: order.status.toUpperCase(),
+          OrderID: order.id.slice(0, 8),
+          KOTNo: order.kotNo || 'N/A',
+          Total: grossAmount,
+          Tax: isRevoked ? -taxVal : taxVal,
+          Net: netAmount
         };
 
         data.sales_report.push(reportRow);
@@ -445,7 +634,7 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
           const catName = getCategoryName(item.category, item.itemId, item.name);
           if (!categorySales[catName]) categorySales[catName] = { total: 0, quantity: 0, orders: new Set() };
           // All order item prices are in cents
-          const price = Math.round(item.price || 0);
+          const price = normalizeToCents(item.price, amount);
           const qty = item.quantity || 0;
           categorySales[catName].total += (price * qty);
           categorySales[catName].quantity += qty;
@@ -469,9 +658,8 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
                   materialConsumption[invItem.id] = { name: invItem.name, consumedQty: 0, totalCost: 0, unit: invItem.unit || 'units', currentStock: invItem.stock || 0 };
                 }
                 const consumed = (ing.quantity || 0) * qty;
-                // Detect if cost was saved in dollars or cents
                 const rawCost = invItem.averageCost || invItem.costPerUnit || 0;
-                const costPerUnit = rawCost < 500 && rawCost % 1 !== 0 ? Math.round(rawCost * 100) : Math.round(rawCost);
+                const costPerUnit = normalizeInventoryCostToCents(rawCost);
                 
                 materialConsumption[invItem.id].consumedQty += consumed;
                 materialConsumption[invItem.id].totalCost += Math.round(consumed * costPerUnit);
@@ -558,10 +746,11 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
 
   const getColumnsForReport = (type: string) => {
     switch (type) {
-      case 'general_ledger': return ['Date', 'Reference', 'Description', 'Account', 'Debit', 'Credit', 'Subsidiary', 'Class'];
+      case 'general_ledger': return ['Voucher No', 'Entity Type', 'Date', 'Ledger Account', 'Subsidiary Account', 'Subsidiary Type', 'OrderId', 'BillId', 'CustomerId', 'VendorId', 'SubsidiaryId', 'ClassId', 'JournalEntryId', 'DocumentType', 'DocumentId', 'AccountingReference', 'Debit', 'Credit', 'Balance', 'Class', 'Amount Narration', 'Memo'];
+      case 'customer_balance': return ['Voucher No', 'Entity Type', 'Date', 'Ledger Account', 'Subsidiary Account', 'Subsidiary Type', 'OrderId', 'BillId', 'CustomerId', 'VendorId', 'SubsidiaryId', 'ClassId', 'JournalEntryId', 'DocumentType', 'DocumentId', 'AccountingReference', 'Debit', 'Credit', 'Balance', 'Class', 'Amount Narration', 'Memo'];
       case 'trial_balance': return ['Class', 'Subcategory', 'Account', 'Type', 'Debit', 'Credit', 'Balance', '% of Type'];
       case 'inventory_report': return ['Item', 'Type', 'Category', 'Stock', 'Unit', 'Avg Cost', 'Total Value', 'Threshold', 'Status', 'Last Update'];
-      case 'sales_report': return ['Date', 'OrderID', 'Order No', 'KOT No', 'Customer', 'Type', 'Table', 'Guests', 'Total', 'Tax', 'Discount', 'Net', 'Categories', 'Payment Method', 'Waiter', 'Status'];
+      case 'sales_report': return ['ID', 'Voucher No', 'OrderId', 'BillId', 'CustomerId', 'SalespersonId', 'Type', 'Recorded Date', 'Sales Date', 'From Sales Order', 'Order No', 'Order Type', 'Order Date', 'Source', 'Destination/Customer', 'Salesperson', 'By Staff', 'Subtotal', 'Discount', 'Net Amount', 'Tax Amount', 'Gross Amount', 'COGS Amount', 'Payment Status', 'Payment Methods', 'Payment Dates', 'Cash', 'Credit Card', 'Debit Card', 'Other', 'Items Sold'];
       case 'pos_summary': return ['Date', 'OrderID', 'Order No', 'Amount', 'Pay Method', 'Waiter', 'Items'];
       case 'revocations_voids': return ['Date', 'OrderID', 'Order No', 'Customer', 'Total', 'Reason', 'Revoked By', 'Waiter'];
       case 'sales_by_category': return ['Category', 'Total Sales', 'Items Sold', 'Orders', 'Avg per Order', 'Percentage'];
@@ -647,26 +836,120 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
       const lowerCol = col.toLowerCase();
       if (lowerCol.includes('percentage') || lowerCol.includes('%') || lowerCol.includes('margin')) return `${val.toFixed(2)}%`;
       if (lowerCol.includes('quantity') || lowerCol.includes('orders') || lowerCol.includes('guests') || lowerCol.includes('threshold') || lowerCol.includes('items')) return val.toLocaleString(); 
-      // Accounting data is in cents, use formatCurrency for clean AED display
-      return formatCurrency(val);
+      if (isMoneyColumn(col)) return formatCurrency(val);
+      return String(val);
+    };
+
+    const selectTotalMoneyColumn = () => {
+      const prioritized = ['gross amount', 'total sales', 'amount', 'balance', 'net amount'];
+      for (const key of prioritized) {
+        const found = columns.find((c) => {
+          const lower = c.toLowerCase();
+          return lower === key || lower.includes(key);
+        });
+        if (found) {
+          const hasNumeric = processedData.some((row) => typeof row[found] === 'number');
+          if (hasNumeric && isMoneyColumn(found)) return found;
+        }
+      }
+
+      return columns.find((c) => {
+        const hasNumeric = processedData.some((row) => typeof row[c] === 'number');
+        return hasNumeric && isMoneyColumn(c);
+      });
     };
 
     // Calculate total balance for the top right indicator
     let totalBalance = 0;
-    if (reportType === 'general_ledger' || reportType === 'trial_balance' || reportType === 'cash_flow') {
+    if (reportType === 'general_ledger' || reportType === 'customer_balance' || reportType === 'trial_balance' || reportType === 'cash_flow') {
       const amountCol = columns.find(c => c.toLowerCase().includes('amount') || c.toLowerCase().includes('balance'));
       if (amountCol) {
         totalBalance = processedData.reduce((sum, row) => sum + (row[amountCol] || 0), 0);
       }
     } else if (reportType.includes('sales')) {
-      const salesCol = columns.find(c => c.toLowerCase().includes('sales') || c.toLowerCase().includes('amount'));
+      const salesCol = selectTotalMoneyColumn();
       if (salesCol) {
         totalBalance = processedData.reduce((sum, row) => sum + (row[salesCol] || 0), 0);
       }
     }
 
+    const groupedHeaders = (() => {
+      if (reportType === 'general_ledger' || reportType === 'customer_balance') {
+        return [
+          { label: 'Journal Entry', span: 3 },
+          { label: 'Account', span: 3 },
+          { label: 'Amount', span: 3 },
+          { label: 'Details', span: Math.max(columns.length - 9, 3) },
+        ];
+      }
+      if (reportType === 'sales_report') {
+        return [
+          { label: 'Sale', span: 5 },
+          { label: 'Order', span: 4 },
+          { label: 'Stock Flow', span: 4 },
+          { label: 'Finances', span: 6 },
+          { label: 'Payment', span: 4 },
+          { label: 'Payment Method Amounts', span: 4 },
+          { label: 'Items Sold', span: 1 },
+        ];
+      }
+      return [];
+    })();
+
+    const exportWorkbook = () => {
+      const workbook = XLSX.utils.book_new();
+      const title = reportType === 'customer_balance' ? 'Customer Balance Report' : reportType === 'general_ledger' ? 'Ledger Report' : reportType === 'sales_report' ? 'Sales Report' : reportType.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+      if (reportType === 'general_ledger' || reportType === 'customer_balance' || reportType === 'sales_report') {
+        const headerRows: any[][] = [];
+        headerRows.push([title]);
+
+        if (reportType === 'sales_report') {
+          headerRows.push(['Sale', '', '', '', '', 'Order', '', '', '', 'Stock Flow', '', '', '', 'Finances', '', '', '', '', '', 'Payment', '', '', 'Payment Method Amounts', '', '', '', 'Items Sold']);
+        } else {
+          headerRows.push(['Journal Entry', '', '', 'Account', '', '', 'Amount', '', '', 'Details', '', '']);
+        }
+
+        headerRows.push(columns);
+        const sheet = XLSX.utils.aoa_to_sheet(headerRows);
+        const orderedRows = processedData.map(row => {
+          const orderedRow: Record<string, any> = {};
+          columns.forEach(column => {
+            const value = row[column] ?? '';
+            orderedRow[column] = typeof value === 'number' && isMoneyColumn(column)
+              ? Number((value / 100).toFixed(2))
+              : value;
+          });
+          return orderedRow;
+        });
+        XLSX.utils.sheet_add_json(sheet, orderedRows, { origin: headerRows.length, skipHeader: true });
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Report');
+        XLSX.writeFile(workbook, `${reportType}_export_${new Date().toISOString().split('T')[0]}.xlsx`);
+        return;
+      }
+
+      const exportData = processedData.map(row => {
+        const newRow: any = {};
+        Object.keys(row).forEach(key => {
+          const val = row[key];
+          if (typeof val === 'number' && isMoneyColumn(key)) {
+            newRow[key] = val / 100;
+          } else {
+            newRow[key] = val;
+          }
+        });
+        return newRow;
+      });
+      exportToExcel(exportData, `${reportType}_export`);
+    };
+
     return (
       <div className="flex flex-col w-full bg-card border border-border shadow-sm rounded-xl overflow-hidden font-sans">
+        <div className="px-6 py-5 border-b border-border bg-gradient-to-r from-card via-card to-muted/20">
+          <div className="text-[10px] font-black uppercase tracking-[0.35em] text-muted-foreground">Workbook Preview</div>
+          <div className="mt-1 text-2xl font-black text-foreground uppercase tracking-tight">{reportType.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}</div>
+          <div className="text-xs text-muted-foreground font-medium">{dateRange.start} to {dateRange.end}</div>
+        </div>
         {/* Filter Bar */}
         {showFilters && (
           <div className="bg-muted/50 border-b border-border p-4 flex flex-col gap-4 animate-in slide-in-from-top duration-300">
@@ -808,13 +1091,13 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
           <div className="flex items-center gap-3">
             {(() => {
               let totalBalance = 0;
-              if (reportType === 'general_ledger' || reportType === 'trial_balance' || reportType === 'cash_flow') {
+              if (reportType === 'general_ledger' || reportType === 'customer_balance' || reportType === 'trial_balance' || reportType === 'cash_flow') {
                 const amountCol = columns.find(c => c.toLowerCase().includes('amount') || c.toLowerCase().includes('balance'));
                 if (amountCol) {
                   totalBalance = processedData.reduce((sum, row) => sum + (row[amountCol] || 0), 0);
                 }
               } else if (reportType.includes('sales')) {
-                const salesCol = columns.find(c => c.toLowerCase().includes('sales') || c.toLowerCase().includes('amount'));
+                const salesCol = selectTotalMoneyColumn();
                 if (salesCol) {
                   totalBalance = processedData.reduce((sum, row) => sum + (row[salesCol] || 0), 0);
                 }
@@ -826,21 +1109,7 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
               ) : null;
             })()}
             <button 
-              onClick={() => {
-                const exportData = processedData.map(row => {
-                  const newRow: any = {};
-                  Object.keys(row).forEach(key => {
-                    const val = row[key];
-                    if (typeof val === 'number' && !key.toLowerCase().includes('quantity') && !key.toLowerCase().includes('orders') && !key.toLowerCase().includes('percentage')) {
-                      newRow[key] = val / 100;
-                    } else {
-                      newRow[key] = val;
-                    }
-                  });
-                  return newRow;
-                });
-                exportToExcel(exportData, `${reportType}_export`);
-              }}
+              onClick={exportWorkbook}
               className="flex items-center gap-2 bg-card border border-border hover:bg-muted/50 text-foreground/80 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
             >
               <Download size={16} /> Export to Excel
@@ -852,6 +1121,15 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
         <div className="overflow-x-auto max-h-[600px] custom-scrollbar">
           <table className="w-full text-left">
             <thead className="sticky top-0 z-10 bg-card shadow-[0_1px_0_rgba(0,0,0,0.1)]">
+              {groupedHeaders.length > 0 && (
+                <tr className="bg-muted/60 text-[10px] font-black uppercase tracking-[0.35em] text-muted-foreground">
+                  {groupedHeaders.map((group, index) => (
+                    <th key={`${group.label}-${index}`} colSpan={group.span} className="px-6 py-3 text-left border-b border-border/60">
+                      {group.label}
+                    </th>
+                  ))}
+                </tr>
+              )}
               <tr className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">
                 {visibleColumns.map((col, i) => {
                   const uniqueValues = Array.from(new Set(data.map(row => row[col]))).filter(v => v !== null && v !== undefined && v !== '');
@@ -1208,6 +1486,26 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
             {renderSpreadsheet(data.cash_flow, getColumnsForReport('cash_flow'))}
           </div>
         );
+
+      case 'general_ledger':
+      case 'customer_balance': {
+        const ledgerRows = reportType === 'customer_balance' ? data.customer_balance : data.general_ledger;
+        const totalDebit = ledgerRows.reduce((sum: number, row: any) => sum + (row.Debit || 0), 0);
+        const totalCredit = ledgerRows.reduce((sum: number, row: any) => sum + (row.Credit || 0), 0);
+        const netBalance = ledgerRows.reduce((sum: number, row: any) => sum + (row.Balance || 0), 0);
+
+        return (
+          <div className="space-y-6">
+            {renderKPICards([
+              { label: 'Transaction Lines', value: ledgerRows.length, isCurrency: false, twBg: 'bg-primary/10', twText: 'text-primary', twBorder: 'border-primary/20', icon: FileText },
+              { label: 'Total Debits', value: totalDebit, twBg: 'bg-emerald-500/10', twText: 'text-emerald-500', twBorder: 'border-emerald-500/20', icon: TrendingUp },
+              { label: 'Total Credits', value: totalCredit, twBg: 'bg-amber-500/10', twText: 'text-amber-500', twBorder: 'border-amber-500/20', icon: Wallet },
+              { label: reportType === 'customer_balance' ? 'Customer Balance' : 'Ledger Balance', value: netBalance, twBg: netBalance >= 0 ? 'bg-blue-500/10' : 'bg-red-500/10', twText: netBalance >= 0 ? 'text-blue-500' : 'text-red-500', twBorder: netBalance >= 0 ? 'border-blue-500/20' : 'border-red-500/20', icon: Scale }
+            ])}
+            {renderSpreadsheet(ledgerRows, getColumnsForReport(reportType))}
+          </div>
+        );
+      }
 
       case 'sales_report':
       case 'pos_summary':
@@ -1576,7 +1874,7 @@ export default function AccountingReportsIFRS({ reportType, journalEntries, jour
               const formattedData = processedData.map((row: any) => {
                 const newRow = { ...row };
                 Object.keys(newRow).forEach(key => {
-                  if (typeof newRow[key] === 'number' && !key.toLowerCase().includes('quantity') && !key.toLowerCase().includes('orders') && !key.toLowerCase().includes('percentage')) {
+                  if (typeof newRow[key] === 'number' && isMoneyColumn(key)) {
                     newRow[key] = newRow[key] / 100;
                   }
                 });

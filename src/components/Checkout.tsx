@@ -50,7 +50,11 @@ export default function Checkout({ amount, cartItems, onSuccess, onClose }: Chec
       if (orderType === 'delivery') {
         if (selectedAddressId && profile) {
           const saved = profile.addresses.find(a => a.id === selectedAddressId);
-          if (!saved) throw new Error("Address not found");
+          if (!saved) {
+            setIsLoading(false);
+            alert('The selected address is no longer available. Please choose or add another address.');
+            return;
+          }
           finalAddress = saved;
         } else {
           finalAddress = addressForm;

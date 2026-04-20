@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { db, OperationType, handleFirestoreError, secondaryAuth } from '../firebase';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp, where, getDocs, setDoc, limit, getDoc } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp, where, getDocs, setDoc, limit, getDoc, increment } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { MenuItem, Category, InventoryItem, Journal, Order, LedgerGroup } from '../types';
 import { Plus, Edit2, Trash2, Eye, EyeOff, Save, X, ShoppingBag, LayoutGrid, CheckCircle2, Clock, Ban, ShieldCheck, Monitor, Package, ChefHat, Truck, FileText, BarChart3, Boxes, History, Utensils, Printer, Move, Search, Filter, Calendar, Phone, MapPin, User, Hash, ChevronDown, ChevronUp, RotateCcw, Users, BookOpen, Building, Warehouse, Settings, Menu as MenuIcon, Upload, Download, FileSpreadsheet, ChevronRight, CreditCard, Wallet, ArrowRightLeft, Receipt, Percent, TrendingUp, UserPlus, Scale, Book, Grid, UserCheck, PieChart as PieChartIcon, Split, Mail, Tag, Bell, AlertCircle, MessageSquare, Maximize2, Minimize2, DollarSign } from 'lucide-react';
@@ -21,6 +22,57 @@ import { exportToExcel } from '../utils/excel';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
+
+class AdminModuleErrorBoundary extends React.Component<
+  { children: React.ReactNode; resetKey: string },
+  { hasError: boolean; error: string }
+> {
+  declare props: { children: React.ReactNode; resetKey: string };
+  declare state: { hasError: boolean; error: string };
+  declare setState: React.Component<{ children: React.ReactNode; resetKey: string }, { hasError: boolean; error: string }>['setState'];
+
+  constructor(props: { children: React.ReactNode; resetKey: string }) {
+    super(props);
+    this.state = { hasError: false, error: '' };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+
+  componentDidUpdate(prevProps: Readonly<{ children: React.ReactNode; resetKey: string }>) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, error: '' });
+    }
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('Admin module render failed:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-[40vh] flex items-center justify-center p-8">
+          <div className="max-w-xl w-full bg-card border border-border rounded-[2rem] p-8 shadow-lg space-y-4">
+            <h3 className="text-xl font-black text-foreground uppercase tracking-tight">Module failed to load</h3>
+            <p className="text-sm text-muted-foreground font-medium">
+              {this.state.error || 'A module threw an unexpected error while rendering.'}
+            </p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: '' })}
+              className="px-4 py-3 rounded-2xl bg-primary text-white text-xs font-black uppercase tracking-widest"
+            >
+              Retry Module
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 interface AdminPanelProps {
   items: MenuItem[];
@@ -43,6 +95,518 @@ const SettingsField = ({ label, type = 'text', value, onChange, placeholder = ''
   </div>
 );
 
+const toSafeNumber = (value: any): number => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().replace(/,/g, '');
+    if (!normalized) return 0;
+
+    const direct = Number(normalized);
+    if (Number.isFinite(direct)) {
+      return direct;
+    }
+
+    const match = normalized.match(/[-+]?\d*\.?\d+/);
+    if (match) {
+      const parsed = Number(match[0]);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    return 0;
+  }
+
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+
+  if (value && typeof value === 'object') {
+    const candidateKeys = ['stock', 'qty', 'quantity', 'amount', 'value'];
+    for (const key of candidateKeys) {
+      const parsed = toSafeNumber((value as any)[key]);
+      if (parsed !== 0) {
+        return parsed;
+      }
+    }
+  }
+
+  return 0;
+};
+
+const resolveTimestampMs = (value: any): number => {
+  if (!value) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value?.toDate === 'function') {
+    const parsed = value.toDate().getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value?.seconds === 'number') {
+    return value.seconds * 1000;
+  }
+  return 0;
+};
+
+const formatAuditDateTime = (value: any): string => {
+  const ts = resolveTimestampMs(value);
+  if (!ts) return 'N/A';
+  return new Date(ts).toLocaleString();
+};
+
+const formatStockQuantity = (value: any): string => toSafeNumber(value).toFixed(4);
+
+const normalizeKeyToken = (value: unknown): string => String(value || '').trim().toLowerCase();
+
+const mergeEntityRows = (primaryRows: any[], legacyRows: any[]) => {
+  const merged = [...primaryRows, ...legacyRows];
+  const seen = new Set<string>();
+  const out: any[] = [];
+
+  for (const row of merged) {
+    const idToken = normalizeKeyToken(row?.id);
+    const nameToken = normalizeKeyToken(row?.name || row?.displayName || row?.email);
+    const key = idToken || nameToken;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+
+  return out.sort((a, b) => String(a?.name || a?.displayName || '').localeCompare(String(b?.name || b?.displayName || '')));
+};
+
+const normalizeInventoryRow = (row: any) => {
+  const inferredName = row?.name || row?.item_name || row?.primary_name || 'Unnamed Item';
+  const inferredStock = Number(
+    row?.stock ?? row?.qty ?? row?.running_balance ?? row?.balance ?? row?.current_stock ?? row?.last_qty_change ?? 0
+  ) || 0;
+  const inferredUnit = row?.unit || row?.uom || 'pcs';
+  const inferredThreshold = Number(row?.lowStockThreshold ?? row?.reorder_level ?? 0) || 0;
+  const inferredCategory = row?.category || (Number(row?.item_type || 1) === 2 ? 'finished_good' : 'raw_material');
+  const inferredAvgCost = Number(row?.averageCost ?? row?.costPerUnit ?? row?.item_unit_cost ?? row?.last_unit_cost ?? 0) || 0;
+
+  return {
+    ...row,
+    name: inferredName,
+    stock: inferredStock,
+    unit: inferredUnit,
+    lowStockThreshold: inferredThreshold,
+    category: inferredCategory,
+    averageCost: inferredAvgCost,
+    costPerUnit: inferredAvgCost,
+    inventoryItemId: row?.inventoryItemId || row?.item_id || row?.stock_item_id || row?.id,
+  };
+};
+
+const getBillTotalAmount = (bill: any): number => {
+  const totalAmount = toSafeNumber(bill?.totalAmount);
+  if (totalAmount > 0) return totalAmount;
+  return toSafeNumber(bill?.amount);
+};
+
+const getBillPaidAmount = (bill: any): number => {
+  const totalAmount = getBillTotalAmount(bill);
+  const amountPaid = toSafeNumber(bill?.amountPaid);
+  if (amountPaid <= 0) return 0;
+  if (totalAmount <= 0) return amountPaid;
+  return Math.min(amountPaid, totalAmount);
+};
+
+const getBillOutstandingAmount = (bill: any): number => {
+  const totalAmount = getBillTotalAmount(bill);
+  const amountPaid = getBillPaidAmount(bill);
+  return Math.max(totalAmount - amountPaid, 0);
+};
+
+const getBillSupplierRef = (bill: any): string | null => {
+  return bill?.supplierId || bill?.vendorId || null;
+};
+
+const getVendorCreditBalance = (vendor: any): number => {
+  return toSafeNumber(vendor?.creditBalance || vendor?.customerBalance || 0);
+};
+
+const makeSqlLikeId = (): number => {
+  const now = Date.now();
+  const suffix = Math.floor(Math.random() * 90) + 10;
+  return Number(`${now}${suffix}`);
+};
+
+const toSqlBigInt = (value: any, fallback: number = 0): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) return Math.trunc(parsed);
+
+    // Deterministic string->integer hash for SQL-like bigint compatibility.
+    let hash = 0;
+    for (let i = 0; i < trimmed.length; i += 1) {
+      hash = ((hash * 31) + trimmed.charCodeAt(i)) % 2147483647;
+    }
+    return hash || fallback;
+  }
+
+  return fallback;
+};
+
+const buildStockMovementDoc = ({
+  inventoryItem,
+  quantityChange,
+  stockAfter,
+  movementType,
+  reference,
+  locationName = 'main',
+  secondaryName,
+  costPerUnit,
+  hasCostOverride = false,
+  transfer = false,
+  sourceId = inventoryItem.id,
+  sourceName = inventoryItem.name,
+  sourceType = 1,
+  destinationId = inventoryItem.id,
+  destinationName = inventoryItem.name,
+  destinationType = 1,
+  initiationType,
+  info,
+  journalEntryId = 0,
+  posSessionId = 0,
+  orderId = null,
+  billId = null,
+  customerId = null,
+  vendorId = null,
+  subsidiaryId = null,
+  classId = null,
+  documentType = null,
+  documentId = null,
+  accountingReference = null,
+  purchaseSupplierInvoiceDate = 0,
+  purchaseSupplierInvoiceNo = null,
+  quotation = false,
+  quotationAmount = 0,
+  returnFlowParentId = 0,
+  salesAmountDiscount = 0,
+  salesAmountSubtotal = 0,
+  salesAmountTax = 0,
+  salesPersonCommissionPercentage = 0,
+  salesPersonId = 0,
+  salesPersonName = null,
+  stockFlowRecordId,
+  statusId = 0,
+  systemGenerated = true,
+  convertCurrencyCode = null,
+  convertCurrencyRate = 0,
+  taxCodeName = null,
+  hasFakeStock = false,
+  isPastPurchase = movementType === 'PURCHASE',
+  isRentalReturn = false,
+}: {
+  inventoryItem: InventoryItem;
+  quantityChange: number;
+  stockAfter: number;
+  movementType: 'PURCHASE' | 'ADJUST' | 'TRANSFER' | 'SALE' | 'WASTE';
+  reference: string;
+  locationName?: string;
+  secondaryName?: string;
+  costPerUnit?: number;
+  hasCostOverride?: boolean;
+  transfer?: boolean;
+  sourceId?: string | number;
+  sourceName?: string;
+  sourceType?: number;
+  destinationId?: string | number;
+  destinationName?: string;
+  destinationType?: number;
+  initiationType?: number;
+  info?: string;
+  journalEntryId?: string | number;
+  posSessionId?: string | number;
+  orderId?: string | number | null;
+  billId?: string | number | null;
+  customerId?: string | number | null;
+  vendorId?: string | number | null;
+  subsidiaryId?: string | number | null;
+  classId?: string | number | null;
+  documentType?: string | null;
+  documentId?: string | number | null;
+  accountingReference?: string | number | null;
+  purchaseSupplierInvoiceDate?: number;
+  purchaseSupplierInvoiceNo?: string | null;
+  quotation?: boolean;
+  quotationAmount?: number;
+  returnFlowParentId?: string | number;
+  salesAmountDiscount?: number;
+  salesAmountSubtotal?: number;
+  salesAmountTax?: number;
+  salesPersonCommissionPercentage?: number;
+  salesPersonId?: string | number;
+  salesPersonName?: string | null;
+  stockFlowRecordId?: string;
+  statusId?: string | number;
+  systemGenerated?: boolean;
+  convertCurrencyCode?: string | null;
+  convertCurrencyRate?: number;
+  taxCodeName?: string | null;
+  hasFakeStock?: boolean;
+  isPastPurchase?: boolean;
+  isRentalReturn?: boolean;
+}) => {
+  const safeQuantity = Math.abs(toSafeNumber(quantityChange));
+  const safeCost = toSafeNumber(costPerUnit);
+  const itemType = inventoryItem.category === 'finished_good' ? 2 : 1;
+  const totalAmount = Math.round(safeQuantity * safeCost);
+  const initiationCode = initiationType ?? (movementType === 'SALE' ? 1 : movementType === 'PURCHASE' ? 2 : movementType === 'TRANSFER' ? 3 : movementType === 'ADJUST' ? 4 : 5);
+  const flowRecordId = stockFlowRecordId || `${movementType}-${inventoryItem.id}-${Date.now()}`;
+  const createdAt = Date.now();
+
+  return {
+    stock_flow_record_id: flowRecordId,
+    amount: totalAmount,
+    amount_additional_costs: 0,
+    destination_id: destinationId,
+    destination_name: destinationName || inventoryItem.name,
+    destination_type: destinationType,
+    has_fake_stock: hasFakeStock,
+    info: info || reference,
+    initiation_date: createdAt,
+    initiation_type: initiationCode,
+    initiator_full_name: sourceName || inventoryItem.name,
+    initiator_id: sourceId,
+    is_past_purchase: isPastPurchase,
+    is_rental_return: isRentalReturn,
+    journal_entry_id: journalEntryId,
+    pos_session_id: posSessionId,
+    order_id: orderId,
+    bill_id: billId,
+    customer_id: customerId,
+    vendor_id: vendorId,
+    subsidiary_id: subsidiaryId,
+    class_id: classId,
+    document_type: documentType,
+    document_id: documentId,
+    accounting_reference: accountingReference,
+    purchase_supplier_invoice_date: purchaseSupplierInvoiceDate,
+    purchase_supplier_invoice_no: purchaseSupplierInvoiceNo,
+    quotation,
+    quotation_amount: quotationAmount,
+    return_flow_parent_id: returnFlowParentId,
+    sales_amount_discount: salesAmountDiscount,
+    sales_amount_subtotal: salesAmountSubtotal,
+    sales_amount_tax: salesAmountTax,
+    sales_person_commission_percentage: salesPersonCommissionPercentage,
+    sales_person_id: salesPersonId,
+    sales_person_name_full_name: salesPersonName,
+    source_id: sourceId,
+    source_name: sourceName || inventoryItem.name,
+    source_type: sourceType,
+    date_created: createdAt,
+    due_date: createdAt,
+    tax_code_name: taxCodeName,
+    system_generated: systemGenerated,
+    convert_currency_code: convertCurrencyCode,
+    convert_currency_rate: convertCurrencyRate,
+    status_id: statusId,
+    inventoryItemId: inventoryItem.id,
+    itemName: inventoryItem.name,
+    type: movementType.toLowerCase(),
+    flowType: movementType,
+    qty: safeQuantity,
+    quantityChange,
+    stockAfter,
+    cost: safeCost,
+    item_id: inventoryItem.id,
+    stock_item_id: inventoryItem.id,
+    item_type: itemType,
+    location_id: locationName,
+    location_type: 1,
+    transfer,
+    date: createdAt,
+    from_service_id: 0,
+    primary_name: inventoryItem.name,
+    secondary_name: secondaryName || reference,
+    has_cost_override: hasCostOverride,
+    reference,
+    timestamp: serverTimestamp(),
+  };
+};
+
+const recordStockMovement = async (movementDoc: Record<string, any>) => {
+  const nowMs = Date.now();
+  const flowId = toSqlBigInt(movementDoc.id ?? movementDoc.stock_flow_id, makeSqlLikeId());
+  const flowItemId = toSqlBigInt(movementDoc.stock_flow_item_id, makeSqlLikeId());
+  const itemId = toSqlBigInt(movementDoc.item_id ?? movementDoc.stock_item_id ?? movementDoc.inventoryItemId, 0);
+  const sourceId = toSqlBigInt(movementDoc.source_id ?? itemId, itemId);
+  const destinationId = toSqlBigInt(movementDoc.destination_id ?? itemId, itemId);
+  const initiatorId = toSqlBigInt(movementDoc.initiator_id ?? 0, 0);
+  const journalEntryId = toSqlBigInt(movementDoc.journal_entry_id ?? 0, 0);
+  const posSessionId = toSqlBigInt(movementDoc.pos_session_id ?? 0, 0);
+  const statusId = toSqlBigInt(movementDoc.status_id ?? 0, 0);
+  const qtyAbs = Math.abs(toSafeNumber(movementDoc.qty ?? movementDoc.quantityChange ?? 0));
+  const safeCost = toSafeNumber(movementDoc.cost ?? movementDoc.costPerUnit ?? 0);
+  const safeAmount = Math.round(toSafeNumber(movementDoc.amount ?? (qtyAbs * safeCost)));
+  const initiationType = toSqlBigInt(
+    movementDoc.initiation_type ?? (movementDoc.flowType === 'SALE' ? 1 : movementDoc.flowType === 'PURCHASE' ? 2 : movementDoc.flowType === 'TRANSFER' ? 3 : movementDoc.flowType === 'ADJUST' ? 4 : 5),
+    0,
+  );
+  const sourceType = toSqlBigInt(movementDoc.source_type ?? movementDoc.item_type ?? 1, 1);
+  const destinationType = toSqlBigInt(movementDoc.destination_type ?? movementDoc.item_type ?? 1, 1);
+
+  const stockFlowDoc = {
+    ...movementDoc,
+    id: flowId,
+    amount: safeAmount,
+    amount_additional_costs: toSafeNumber(movementDoc.amount_additional_costs ?? 0),
+    destination_id: destinationId,
+    destination_name: String(movementDoc.destination_name || movementDoc.primary_name || movementDoc.itemName || ''),
+    destination_type: destinationType,
+    has_fake_stock: Boolean(movementDoc.has_fake_stock ?? false),
+    info: String(movementDoc.info || movementDoc.reference || ''),
+    initiation_date: toSqlBigInt(movementDoc.initiation_date ?? movementDoc.date_created ?? nowMs, nowMs),
+    initiation_type: initiationType,
+    initiator_full_name: String(movementDoc.initiator_full_name || movementDoc.source_name || ''),
+    initiator_id: initiatorId,
+    is_past_purchase: Boolean(movementDoc.is_past_purchase ?? movementDoc.flowType === 'PURCHASE'),
+    is_rental_return: Boolean(movementDoc.is_rental_return ?? false),
+    journal_entry_id: journalEntryId,
+    pos_session_id: posSessionId,
+    purchase_supplier_invoice_date: toSqlBigInt(movementDoc.purchase_supplier_invoice_date ?? 0, 0),
+    purchase_supplier_invoice_no: movementDoc.purchase_supplier_invoice_no || null,
+    quotation: Boolean(movementDoc.quotation ?? false),
+    quotation_amount: toSafeNumber(movementDoc.quotation_amount ?? 0),
+    return_flow_parent_id: toSqlBigInt(movementDoc.return_flow_parent_id ?? 0, 0),
+    sales_amount_discount: toSafeNumber(movementDoc.sales_amount_discount ?? 0),
+    sales_amount_subtotal: toSafeNumber(movementDoc.sales_amount_subtotal ?? 0),
+    sales_amount_tax: toSafeNumber(movementDoc.sales_amount_tax ?? 0),
+    sales_person_commission_percentage: toSqlBigInt(movementDoc.sales_person_commission_percentage ?? 0, 0),
+    sales_person_id: toSqlBigInt(movementDoc.sales_person_id ?? 0, 0),
+    sales_person_name_full_name: movementDoc.sales_person_name_full_name || null,
+    source_id: sourceId,
+    source_name: String(movementDoc.source_name || movementDoc.primary_name || movementDoc.itemName || ''),
+    source_type: sourceType,
+    stock_flow_record_id: String(movementDoc.stock_flow_record_id || `${movementDoc.flowType || movementDoc.type || 'FLOW'}-${flowId}`),
+    date_created: toSqlBigInt(movementDoc.date_created ?? nowMs, nowMs),
+    due_date: toSqlBigInt(movementDoc.due_date ?? nowMs, nowMs),
+    tax_code_name: movementDoc.tax_code_name || null,
+    system_generated: Boolean(movementDoc.system_generated ?? true),
+    convert_currency_code: movementDoc.convert_currency_code || null,
+    convert_currency_rate: toSafeNumber(movementDoc.convert_currency_rate ?? 0),
+    status_id: statusId,
+  };
+
+  const stockFlowItemDoc = {
+    id: flowItemId,
+    amount: toSafeNumber(movementDoc.amount ?? safeAmount),
+    fake_stock_quantity_value: toSafeNumber(movementDoc.fake_stock_quantity_value ?? 0),
+    item_id: itemId,
+    item_name: String(movementDoc.itemName || movementDoc.primary_name || ''),
+    item_proxy_parent_id: movementDoc.item_proxy_parent_id || null,
+    item_type: toSqlBigInt(movementDoc.item_type ?? 1, 1),
+    movie_ticket_service_sale_id: toSqlBigInt(movementDoc.movie_ticket_service_sale_id ?? 0, 0),
+    original_cost: toSafeNumber(movementDoc.cost ?? 0),
+    original_price: toSafeNumber(movementDoc.original_price ?? movementDoc.cost ?? 0),
+    proxy_parent: Boolean(movementDoc.proxy_parent ?? false),
+    quantity_value: qtyAbs,
+    record_id: String(movementDoc.stock_flow_record_id || `${flowId}`),
+    serial_number: movementDoc.serial_number || null,
+    stock_flow_date: toSqlBigInt(movementDoc.date_created ?? nowMs, nowMs),
+    stock_flow_destination_id: destinationId,
+    stock_flow_destination_type: destinationType,
+    stock_flow_source_id: sourceId,
+    stock_flow_source_type: sourceType,
+    uom: movementDoc.uom || null,
+    flag_delivery_fee: Boolean(movementDoc.flag_delivery_fee ?? false),
+    item_discount: toSafeNumber(movementDoc.item_discount ?? 0),
+    batch_no: movementDoc.batch_no || null,
+    item_unit_cost: toSafeNumber(movementDoc.cost ?? movementDoc.costPerUnit ?? 0),
+  };
+
+  const stockFlowItemsLinkDoc = {
+    stock_flow_id: flowId,
+    items_id: flowItemId,
+  };
+
+  const inventoryFlowDoc = {
+    id: toSqlBigInt(movementDoc.inventory_flow_id, makeSqlLikeId()),
+    cost: toSafeNumber(movementDoc.cost ?? movementDoc.costPerUnit ?? 0),
+    item_id: itemId,
+    item_type: toSqlBigInt(movementDoc.item_type ?? 1, 1),
+    location_id: toSqlBigInt(movementDoc.location_id ?? destinationId, destinationId),
+    location_type: toSqlBigInt(movementDoc.location_type ?? 1, 1),
+    qty: toSafeNumber(movementDoc.quantityChange ?? movementDoc.qty ?? 0),
+    transfer: Boolean(movementDoc.transfer ?? false),
+    date: toSqlBigInt(movementDoc.date ?? nowMs, nowMs),
+    type: (movementDoc.flowType || movementDoc.type || 'ADJUST').toString().toUpperCase(),
+    from_service_id: toSqlBigInt(movementDoc.from_service_id ?? 0, 0),
+    primary_name: movementDoc.primary_name || movementDoc.itemName || null,
+    secondary_name: movementDoc.secondary_name || movementDoc.reference || null,
+    has_cost_override: Boolean(movementDoc.has_cost_override ?? false),
+  };
+
+  const stockFlowTransactionDoc = {
+    stock_flow_id: flowId,
+    transaction_ids: toSqlBigInt(movementDoc.journal_entry_id ?? movementDoc.transaction_id ?? 0, 0),
+  };
+
+  const stockItemDoc = {
+    id: itemId,
+    item_id: itemId,
+    stock_item_id: itemId,
+    item_name: String(movementDoc.itemName || movementDoc.primary_name || movementDoc.source_name || movementDoc.destination_name || ''),
+    item_type: toSqlBigInt(movementDoc.item_type ?? 1, 1),
+    uom: movementDoc.uom || null,
+    last_stock_flow_id: flowId,
+    last_flow_type: (movementDoc.flowType || movementDoc.type || 'ADJUST').toString().toUpperCase(),
+    last_qty_change: toSafeNumber(movementDoc.quantityChange ?? movementDoc.qty ?? 0),
+    last_unit_cost: toSafeNumber(movementDoc.cost ?? movementDoc.costPerUnit ?? 0),
+    updated_at: serverTimestamp(),
+  };
+
+  const stockMovementsWrite = addDoc(collection(db, 'stock_movements'), movementDoc);
+  const stockFlowWrite = setDoc(doc(db, 'stock_flow', String(flowId)), stockFlowDoc, { merge: true });
+  const stockFlowItemWrite = setDoc(doc(db, 'stock_flow_item', String(flowItemId)), stockFlowItemDoc, { merge: true });
+  const stockFlowItemsLinkWrite = addDoc(collection(db, 'stock_flow_items'), stockFlowItemsLinkDoc);
+  const inventoryFlowWrite = setDoc(doc(db, 'inventory_flow', String(inventoryFlowDoc.id)), inventoryFlowDoc, { merge: true });
+  const stockFlowTransactionWrite = addDoc(collection(db, 'stock_flow_transaction_ids'), stockFlowTransactionDoc);
+  const stockItemWrite = setDoc(doc(db, 'stock_item', String(itemId)), stockItemDoc, { merge: true });
+
+  const results = await Promise.allSettled([
+    stockMovementsWrite,
+    stockFlowWrite,
+    stockFlowItemWrite,
+    stockFlowItemsLinkWrite,
+    inventoryFlowWrite,
+    stockFlowTransactionWrite,
+    stockItemWrite,
+  ]);
+  const failures = results.filter((result) => result.status === 'rejected') as PromiseRejectedResult[];
+
+  if (failures.length === results.length) {
+    throw failures[0]?.reason || new Error('Unable to write stock movement');
+  }
+
+  if (failures.length > 0) {
+    console.warn('One stock movement mirror write failed', failures[0]?.reason);
+  }
+
+  return {
+    stockFlowId: flowId,
+    stockFlowItemId: flowItemId,
+    inventoryFlowId: inventoryFlowDoc.id,
+  };
+};
+
 export default function AdminPanel({ items, categories, onClose, onLogout, onOpenPOS }: AdminPanelProps) {
   const { user, profile } = useAuth();
   const navigate = useNavigate();
@@ -54,6 +618,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [classes, setClasses] = useState<any[]>([]);
   const [expandedJournalId, setExpandedJournalId] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [cogsRepairState, setCogsRepairState] = useState<{ running: boolean; message: string }>({ running: false, message: '' });
   const [newLedgerGroup, setNewLedgerGroup] = useState({ name: '', code: '', type: 'Asset' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense', parentGroupId: '', isAccount: false });
   const [editingLedgerGroupId, setEditingLedgerGroupId] = useState<string | null>(null);
   const [editLedgerGroupForm, setEditLedgerGroupForm] = useState({ name: '', code: '', type: 'Asset' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense', parentGroupId: '', isAccount: false });
@@ -378,12 +943,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     );
   };
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'menu' | 'orders' | 'kitchen' | 'inventory' | 'accounting' | 'finance' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production' | 'purchases' | 'delivery' | 'reservations' | 'hr' | 'promotions' | 'feedback'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'menu' | 'orders' | 'kitchen' | 'inventory' | 'stock_ops' | 'accounting' | 'finance' | 'tables' | 'crm' | 'users' | 'stores' | 'warehouses' | 'mobile' | 'terminals' | 'settings' | 'wastage' | 'recipes' | 'suppliers' | 'production' | 'purchases' | 'delivery' | 'reservations' | 'hr' | 'promotions' | 'feedback'>('dashboard');
   const [drivers, setDrivers] = useState<any[]>([]);
   const [isAddingDriver, setIsAddingDriver] = useState(false);
   const [newDriver, setNewDriver] = useState({ name: '', phone: '', vehicle: '', status: 'active' });
   const [recipeSearchTerm, setRecipeSearchTerm] = useState('');
-  const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'profit_loss' | 'balance_sheet' | 'cash_flow' | 'equity' | 'trial_balance' | 'general_ledger' | 'inventory_report' | 'sales_report' | 'pos_summary' | 'sales_by_category' | 'sales_by_item' | 'tax_report' | 'waiter_performance' | 'raw_material_consumption'>('dashboard');
+  const [accountingSubTab, setAccountingSubTab] = useState<'dashboard' | 'profit_loss' | 'balance_sheet' | 'cash_flow' | 'equity' | 'trial_balance' | 'general_ledger' | 'customer_balance' | 'inventory_report' | 'sales_report' | 'pos_summary' | 'sales_by_category' | 'sales_by_item' | 'tax_report' | 'waiter_performance' | 'raw_material_consumption' | 'pos_audit'>('dashboard');
   const [accountingTab, setAccountingTab] = useState<'reports' | 'setup'>('reports');
   const [setupSubTab, setSetupSubTab] = useState<'ledger' | 'subsidiaries' | 'classes'>('ledger');
   const [isReportsDropdownOpen, setIsReportsDropdownOpen] = useState(false);
@@ -470,6 +1035,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         {isAddingInventory && (
           <div className="p-6 bg-background rounded-3xl border-2 border-dashed border-border mb-6">
             <h4 className="font-bold text-foreground mb-4">Add New Inventory Item</h4>
+            <p className="text-xs text-muted-foreground mb-3">Cost is auto-calculated from received purchases. Manual costing is disabled.</p>
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <input
                 type="text"
@@ -491,14 +1057,6 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 className="p-3 rounded-xl border border-border focus:ring-2 focus:ring-primary outline-none"
                 value={inventoryForm.unit}
                 onChange={e => setInventoryForm({ ...inventoryForm, unit: e.target.value })}
-              />
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Cost per Unit"
-                className="p-3 rounded-xl border border-border focus:ring-2 focus:ring-primary outline-none"
-                value={inventoryForm.costPerUnit || ''}
-                onChange={e => setInventoryForm({ ...inventoryForm, costPerUnit: Number(e.target.value) })}
               />
               <input
                 type="number"
@@ -527,8 +1085,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 onClick={async () => {
                   if (!inventoryForm.name || !inventoryForm.unit) return;
                   try {
-                    const initialCostCents = Math.round((inventoryForm.costPerUnit || 0) * 100);
-                    await addDoc(collection(db, 'inventory'), {
+                    const initialCostCents = 0;
+                    const inventoryRef = await addDoc(collection(db, 'inventory'), {
                       name: inventoryForm.name,
                       stock: inventoryForm.stock || 0,
                       unit: inventoryForm.unit,
@@ -536,10 +1094,34 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       averageCost: initialCostCents,
                       lowStockThreshold: inventoryForm.lowStockThreshold || 10,
                       category: inventoryForm.category || 'raw_material',
+                      item_id: inventoryForm.name,
+                      item_name: inventoryForm.name,
+                      stock_item_id: inventoryForm.name,
+                      qty: inventoryForm.stock || 0,
+                      uom: inventoryForm.unit,
+                      item_unit_cost: initialCostCents,
+                      reorder_level: inventoryForm.lowStockThreshold || 10,
+                      item_type: (inventoryForm.category || 'raw_material') === 'finished_good' ? 2 : 1,
                       lastUpdated: serverTimestamp()
                     });
+
+                    await setDoc(doc(db, 'stock_item', inventoryRef.id), {
+                      id: inventoryRef.id,
+                      item_id: inventoryRef.id,
+                      stock_item_id: inventoryRef.id,
+                      item_name: inventoryForm.name,
+                      qty: inventoryForm.stock || 0,
+                      running_balance: inventoryForm.stock || 0,
+                      uom: inventoryForm.unit,
+                      reorder_level: inventoryForm.lowStockThreshold || 10,
+                      item_unit_cost: initialCostCents,
+                      last_unit_cost: initialCostCents,
+                      item_type: (inventoryForm.category || 'raw_material') === 'finished_good' ? 2 : 1,
+                      updated_at: serverTimestamp(),
+                    }, { merge: true });
+
                     setIsAddingInventory(false);
-                    setInventoryForm({ name: '', stock: 0, unit: '', costPerUnit: 0, lowStockThreshold: 10, category: 'raw_material' });
+                    setInventoryForm({ name: '', stock: 0, unit: '', lowStockThreshold: 10, category: 'raw_material' });
                   } catch (err) {
                     handleFirestoreError(err, OperationType.CREATE, 'inventory');
                   }
@@ -563,7 +1145,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             {inventory
               .filter(item => {
                 const matchesCategory = inventoryCategoryFilter === 'all' || (item.category || 'raw_material') === inventoryCategoryFilter;
-                const matchesSearch = item.name.toLowerCase().includes(inventorySearchQuery.toLowerCase());
+                const matchesSearch = (item.name || '').toLowerCase().includes(inventorySearchQuery.toLowerCase());
                 return matchesCategory && matchesSearch;
               })
               .map(item => (
@@ -594,13 +1176,6 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       />
                     </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="number"
-                        placeholder="Cost per Unit"
-                        className="w-full p-3 rounded-xl border border-border focus:ring-2 focus:ring-primary outline-none"
-                        value={editInventoryForm.costPerUnit ?? ''}
-                        onChange={e => setEditInventoryForm({ ...editInventoryForm, costPerUnit: Number(e.target.value) })}
-                      />
                       <input
                         type="number"
                         placeholder="Low Stock Threshold"
@@ -636,12 +1211,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                   <>
                     <div className="flex justify-between items-start mb-4">
                       <div>
-                        <h4 className="font-bold text-foreground">{item.name}</h4>
+                        <h4 className="font-bold text-foreground">{item.name || 'Unnamed Item'}</h4>
                         <p className="text-xs text-muted-foreground uppercase font-bold tracking-widest">{item.unit}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Cost: {formatCurrency(item.averageCost ?? item.costPerUnit ?? 0)} / {item.unit}</p>
+                        <p className="text-xs text-muted-foreground mt-1">Cost: {formatCurrency(toSafeNumber(item.averageCost ?? item.costPerUnit ?? 0))} / {item.unit}</p>
                       </div>
                       <div className="flex flex-col items-end gap-2">
-                        {item.stock <= item.lowStockThreshold && (
+                        {toSafeNumber(item.stock) <= toSafeNumber(item.lowStockThreshold) && (
                           <span className="px-2 py-1 bg-red-100 text-red-600 text-[10px] font-bold rounded-lg animate-pulse">LOW STOCK</span>
                         )}
                         <button
@@ -655,16 +1230,17 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     </div>
                     <div className="flex items-end justify-between">
                       <div className="text-3xl font-black text-foreground">
-                        {Number(item.stock.toFixed(4))}
+                        {formatStockQuantity(item.stock)}
                         <span className="text-sm font-bold text-muted-foreground ml-1">{item.unit}</span>
                       </div>
                       <div className="flex gap-2">
-                        {item.stock <= item.lowStockThreshold && (
+                        {toSafeNumber(item.stock) <= toSafeNumber(item.lowStockThreshold) && (
                           <button 
                             onClick={async (e) => {
                               e.stopPropagation();
                               try {
                                 const poNumber = `PO-${Date.now().toString().slice(-6)}`;
+                                const reorderQuantity = Math.ceil(toSafeNumber(item.lowStockThreshold) * 2);
                                 await addDoc(collection(db, 'purchase_orders'), {
                                   poNumber,
                                   vendorId: '', 
@@ -672,10 +1248,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                   items: [{
                                     inventoryItemId: item.id,
                                     name: item.name,
-                                    quantity: Math.ceil(item.lowStockThreshold * 2),
-                                    expectedPrice: item.averageCost || 0
+                                    quantity: reorderQuantity,
+                                    expectedPrice: toSafeNumber(item.averageCost || item.costPerUnit || 0)
                                   }],
-                                  totalAmount: (item.averageCost || 0) * Math.ceil(item.lowStockThreshold * 2),
+                                  totalAmount: toSafeNumber(item.averageCost || item.costPerUnit || 0) * reorderQuantity,
                                   status: 'draft',
                                   createdAt: serverTimestamp()
                                 });
@@ -721,89 +1297,46 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                             autoFocus
                           />
                         </div>
-                        
-                        {adjustingStock.type === 'add' && (
-                          <div className="flex flex-col gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-bold text-muted-foreground">Unit Price:</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                className="w-20 p-1.5 rounded-lg border border-border text-sm focus:ring-2 focus:ring-primary outline-none"
-                                placeholder="Price"
-                                value={adjustingStock.price || ''}
-                                onChange={e => setAdjustingStock({ ...adjustingStock, price: Number(e.target.value) })}
-                              />
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-bold text-muted-foreground">Supplier:</span>
-                              <select
-                                className="flex-1 p-1.5 rounded-lg border border-border text-sm focus:ring-2 focus:ring-primary outline-none"
-                                value={adjustingStock.supplierId || ''}
-                                onChange={e => setAdjustingStock({ ...adjustingStock, supplierId: e.target.value })}
-                              >
-                                <option value="">Select Supplier...</option>
-                                {vendors.map(v => (
-                                  <option key={v.id} value={v.id}>{v.name}</option>
-                                ))}
-                              </select>
-                            </div>
-                          </div>
-                        )}
+
+                        <p className="text-[11px] text-muted-foreground">This is a quantity adjustment only. Cost updates happen only when receiving purchases.</p>
 
                         <div className="flex items-center gap-2 mt-2">
                           <button
-                            disabled={adjustingStock.type === 'add' && !adjustingStock.supplierId}
                             onClick={async () => {
                               if (!adjustingStock.amount || isNaN(adjustingStock.amount)) return;
-                              if (adjustingStock.type === 'add' && !adjustingStock.supplierId) return;
                               try {
-                                const currentStock = item.stock || 0;
-                                const currentCost = item.averageCost || item.costPerUnit || 0;
+                                const currentStock = toSafeNumber(item.stock);
                                 const newAmount = adjustingStock.amount;
-                                const purchasePrice = Math.round((adjustingStock.price || 0) * 100);
 
                                 let newStock = currentStock;
-                                let newAverageCost = currentCost;
 
                                 if (adjustingStock.type === 'add') {
                                   newStock = currentStock + newAmount;
-                                  if (newStock > 0) {
-                                    newAverageCost = Math.round(((currentStock * currentCost) + (newAmount * purchasePrice)) / newStock);
-                                  } else {
-                                    newAverageCost = purchasePrice;
-                                  }
-                                  
-                                  if (purchasePrice > 0) {
-                                    const supplier = vendors.find(v => v.id === adjustingStock.supplierId);
-                                    await addDoc(collection(db, 'journal'), {
-                                      type: 'expense',
-                                      amount: newAmount * purchasePrice,
-                                      description: `Inventory Purchase: ${item.name} (${newAmount} ${item.unit} @ ${formatCurrency(purchasePrice)})${supplier ? ` from ${supplier.name}` : ''}`,
-                                      timestamp: serverTimestamp(),
-                                      vendorId: adjustingStock.supplierId
-                                    });
-                                    
-                                    await addDoc(collection(db, 'journal_entries'), {
-                                      date: new Date().toISOString().split('T')[0],
-                                      reference: `INV-ADD-${item.name.substring(0, 3).toUpperCase()}`,
-                                      description: `Inventory Purchase: ${item.name}${supplier ? ` from ${supplier.name}` : ''}`,
-                                      timestamp: serverTimestamp(),
-                                      lines: [
-                                        { accountId: '1105', accountName: 'Inventory', debit: newAmount * purchasePrice, credit: 0 },
-                                        { accountId: '1101', accountName: 'Cash on Hand', debit: 0, credit: newAmount * purchasePrice }
-                                      ]
-                                    });
-                                  }
                                 } else {
                                   newStock = currentStock - newAmount;
                                 }
 
                                 await updateDoc(doc(db, 'inventory', item.id), {
                                   stock: newStock,
-                                  averageCost: newAverageCost,
                                   lastUpdated: serverTimestamp()
                                 });
+                                await recordStockMovement(buildStockMovementDoc({
+                                  inventoryItem: item,
+                                  quantityChange: adjustingStock.type === 'add' ? newAmount : -newAmount,
+                                  stockAfter: newStock,
+                                  movementType: 'ADJUST',
+                                  reference: adjustingStock.type === 'add'
+                                    ? `Manual stock increase for ${item.name}`
+                                    : `Manual stock reduction for ${item.name}`,
+                                  locationName: 'main',
+                                  secondaryName: adjustingStock.type === 'add' ? 'Manual Increase' : 'Manual Decrease',
+                                  costPerUnit: item.averageCost || item.costPerUnit || 0,
+                                  hasCostOverride: false,
+                                  vendorId: null,
+                                  documentType: 'inventory_adjustment',
+                                  documentId: item.id,
+                                  accountingReference: adjustingStock.type === 'add' ? `INV-ADD-${item.name.substring(0, 3).toUpperCase()}` : `INV-RED-${item.name.substring(0, 3).toUpperCase()}`,
+                                }));
                                 setAdjustingStock(null);
                               } catch (err) {
                                 handleFirestoreError(err, OperationType.UPDATE, `inventory/${item.id}`);
@@ -833,6 +1366,244 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   };
 
   const renderAccountingTab = () => {
+    const renderPosAuditPanel = () => {
+      const fallbackStateRows = orderStateHistory.length > 0
+        ? orderStateHistory
+        : orders.slice(0, 200).map((order) => ({
+            id: `order-snapshot-${order.id}`,
+            orderId: order.id,
+            fromStatus: 'unknown',
+            toStatus: order.status || 'unknown',
+            by: order.waiter || order.userId || 'system',
+            at: order.updatedAt || order.createdAt || null,
+          }));
+
+      const fallbackCashRows = posCashTransactions.length > 0
+        ? posCashTransactions
+        : journalEntries
+            .filter((entry: any) => entry.orderId || String(entry.reference || '').toUpperCase().startsWith('ORD-'))
+            .slice(0, 200)
+            .flatMap((entry: any) => {
+              const when = entry.timestamp || entry.date || entry.createdAt || null;
+              const sessionId = entry.posSessionId || entry.sessionId || 'N/A';
+              const lines = Array.isArray(entry.lines) ? entry.lines : [];
+              const rows: any[] = [];
+
+              lines.forEach((line: any, idx: number) => {
+                const accountId = String(line.accountId || '');
+                const accountName = String(line.accountName || '').toLowerCase();
+                const debit = toSafeNumber(line.debit || 0);
+                const credit = toSafeNumber(line.credit || 0);
+                const isCashLike = accountId === '1101' || accountId === '1102' || accountName.includes('cash') || accountName.includes('bank');
+                if (!isCashLike) return;
+                if (debit > 0) {
+                  rows.push({ id: `${entry.id}-in-${idx}`, date: when, sessionId, direction: 'in', amount: debit });
+                }
+                if (credit > 0) {
+                  rows.push({ id: `${entry.id}-out-${idx}`, date: when, sessionId, direction: 'out', amount: credit });
+                }
+              });
+
+              return rows;
+            })
+            .slice(0, 200);
+
+      const fallbackPrintRows = savedPosPrints.length > 0
+        ? savedPosPrints
+        : orders
+            .filter((order) => ['paid', 'finalized', 'completed'].includes(String(order.status || '').toLowerCase()))
+            .slice(0, 200)
+            .map((order) => ({
+              id: `order-print-${order.id}`,
+              createdAt: order.updatedAt || order.createdAt || null,
+              orderId: order.id,
+              voucherNo: order.orderNo || order.id.slice(-6).toUpperCase(),
+              total: order.total || 0,
+            }));
+
+      const totalBreakMs = posBreakEvents
+        .filter((row: any) => row.event === 'break_end')
+        .reduce((sum: number, row: any) => sum + toSafeNumber(row.elapsedMs), 0);
+
+      const cashInTotal = fallbackCashRows
+        .filter((row: any) => row.direction === 'in')
+        .reduce((sum: number, row: any) => sum + toSafeNumber(row.amount), 0);
+
+      const cashOutTotal = fallbackCashRows
+        .filter((row: any) => row.direction === 'out')
+        .reduce((sum: number, row: any) => sum + toSafeNumber(row.amount), 0);
+
+      const breakRows = posBreakEvents.slice(0, 25);
+      const cashRows = fallbackCashRows.slice(0, 25);
+      const stateRows = fallbackStateRows.slice(0, 25);
+      const printRows = fallbackPrintRows.slice(0, 25);
+
+      return (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="p-5 bg-amber-50 rounded-3xl border border-amber-100">
+              <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest">Break Events</p>
+              <p className="text-3xl font-black text-amber-900 mt-1">{posBreakEvents.length}</p>
+              <p className="text-xs font-bold text-amber-700/80 mt-1">Total ended break time: {Math.floor(totalBreakMs / 60000)} min</p>
+            </div>
+            <div className="p-5 bg-emerald-50 rounded-3xl border border-emerald-100">
+              <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest">Cash In</p>
+              <p className="text-3xl font-black text-emerald-900 mt-1">{formatCurrency(cashInTotal)}</p>
+              <p className="text-xs font-bold text-emerald-700/80 mt-1">Transactions: {fallbackCashRows.filter((r: any) => r.direction === 'in').length}</p>
+            </div>
+            <div className="p-5 bg-rose-50 rounded-3xl border border-rose-100">
+              <p className="text-[10px] font-black text-rose-700 uppercase tracking-widest">Cash Out</p>
+              <p className="text-3xl font-black text-rose-900 mt-1">{formatCurrency(cashOutTotal)}</p>
+              <p className="text-xs font-bold text-rose-700/80 mt-1">Transactions: {fallbackCashRows.filter((r: any) => r.direction === 'out').length}</p>
+            </div>
+            <div className="p-5 bg-blue-50 rounded-3xl border border-blue-100">
+              <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest">Trace Logs</p>
+              <p className="text-3xl font-black text-blue-900 mt-1">{fallbackStateRows.length + fallbackPrintRows.length}</p>
+              <p className="text-xs font-bold text-blue-700/80 mt-1">State events + print snapshots</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="bg-card rounded-[2.5rem] border border-border overflow-hidden">
+              <div className="p-5 border-b border-border/70 bg-background/60 flex items-center justify-between">
+                <h3 className="font-black text-foreground flex items-center gap-2"><Clock size={16} className="text-amber-600" /> Break Timeline</h3>
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Latest {breakRows.length}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-background text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+                      <th className="px-4 py-3">Time</th>
+                      <th className="px-4 py-3">Session</th>
+                      <th className="px-4 py-3">Event</th>
+                      <th className="px-4 py-3">User</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {breakRows.map((row: any) => (
+                      <tr key={row.id} className="hover:bg-background/50">
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{formatAuditDateTime(row.at)}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground">{row.sessionId || 'N/A'}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground uppercase">{String(row.event || '').replace('_', ' ')}</td>
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{row.userEmail || row.userId || 'N/A'}</td>
+                      </tr>
+                    ))}
+                    {breakRows.length === 0 && (
+                      <tr>
+                        <td className="px-4 py-6 text-xs text-muted-foreground" colSpan={4}>No break events found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-card rounded-[2.5rem] border border-border overflow-hidden">
+              <div className="p-5 border-b border-border/70 bg-background/60 flex items-center justify-between">
+                <h3 className="font-black text-foreground flex items-center gap-2"><Wallet size={16} className="text-emerald-600" /> Cash Drawer Movements</h3>
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Latest {cashRows.length}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-background text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+                      <th className="px-4 py-3">Time</th>
+                      <th className="px-4 py-3">Session</th>
+                      <th className="px-4 py-3">Direction</th>
+                      <th className="px-4 py-3 text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {cashRows.map((row: any) => (
+                      <tr key={row.id} className="hover:bg-background/50">
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{formatAuditDateTime(row.date)}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground">{row.sessionId || 'N/A'}</td>
+                        <td className={`px-4 py-3 text-xs font-black uppercase ${row.direction === 'in' ? 'text-emerald-600' : 'text-rose-600'}`}>{row.direction || 'N/A'}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground text-right">{formatCurrency(toSafeNumber(row.amount))}</td>
+                      </tr>
+                    ))}
+                    {cashRows.length === 0 && (
+                      <tr>
+                        <td className="px-4 py-6 text-xs text-muted-foreground" colSpan={4}>No cash drawer movements found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-card rounded-[2.5rem] border border-border overflow-hidden">
+              <div className="p-5 border-b border-border/70 bg-background/60 flex items-center justify-between">
+                <h3 className="font-black text-foreground flex items-center gap-2"><ArrowRightLeft size={16} className="text-blue-600" /> Order State History</h3>
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Latest {stateRows.length}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-background text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+                      <th className="px-4 py-3">Time</th>
+                      <th className="px-4 py-3">Order</th>
+                      <th className="px-4 py-3">From</th>
+                      <th className="px-4 py-3">To</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {stateRows.map((row: any) => (
+                      <tr key={row.id} className="hover:bg-background/50">
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{formatAuditDateTime(row.at)}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground">{row.orderId || 'N/A'}</td>
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground uppercase">{row.fromStatus || 'N/A'}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground uppercase">{row.toStatus || 'N/A'}</td>
+                      </tr>
+                    ))}
+                    {stateRows.length === 0 && (
+                      <tr>
+                        <td className="px-4 py-6 text-xs text-muted-foreground" colSpan={4}>No order state history found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-card rounded-[2.5rem] border border-border overflow-hidden">
+              <div className="p-5 border-b border-border/70 bg-background/60 flex items-center justify-between">
+                <h3 className="font-black text-foreground flex items-center gap-2"><Printer size={16} className="text-violet-600" /> Saved Print Snapshots</h3>
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Latest {printRows.length}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-background text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+                      <th className="px-4 py-3">Time</th>
+                      <th className="px-4 py-3">Order</th>
+                      <th className="px-4 py-3">Voucher</th>
+                      <th className="px-4 py-3 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {printRows.map((row: any) => (
+                      <tr key={row.id} className="hover:bg-background/50">
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{formatAuditDateTime(row.createdAt)}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground">{row.orderId || 'N/A'}</td>
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{row.voucherNo || 'N/A'}</td>
+                        <td className="px-4 py-3 text-xs font-black text-foreground text-right">{formatCurrency(toSafeNumber(row.total))}</td>
+                      </tr>
+                    ))}
+                    {printRows.length === 0 && (
+                      <tr>
+                        <td className="px-4 py-6 text-xs text-muted-foreground" colSpan={4}>No print snapshots found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     return (
       <div className="space-y-8">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -856,10 +1627,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 { id: 'equity', label: 'Equity' },
                 { id: 'trial_balance', label: 'Trial Balance' },
                 { id: 'general_ledger', label: 'General Ledger' },
+                { id: 'customer_balance', label: 'Customer Balance' },
                 { id: 'sales_report', label: 'Sales' },
                 { id: 'sales_by_category', label: 'Sales by Category' },
                 { id: 'sales_by_item', label: 'Sales by Item' },
                 { id: 'pos_summary', label: 'POS Summary' },
+                { id: 'pos_audit', label: 'POS Audit' },
                 { id: 'tax_report', label: 'Tax Report' },
                 { id: 'waiter_performance', label: 'Waiter Performance' },
                 { id: 'inventory_report', label: 'Inventory' },
@@ -1372,6 +2145,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           </div>
         </div>
       </div>
+    ) : accountingSubTab === 'pos_audit' ? (
+      renderPosAuditPanel()
     ) : (
       <AccountingReportsIFRS 
         reportType={accountingSubTab as any}
@@ -1653,6 +2428,13 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 >
                   <Download size={14} /> Export
                 </button>
+                <button
+                  onClick={repairHistoricalCogsEntries}
+                  disabled={cogsRepairState.running}
+                  className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 rounded-xl text-xs font-bold hover:bg-amber-100 transition-all disabled:opacity-50"
+                >
+                  <RotateCcw size={14} /> {cogsRepairState.running ? 'Repairing...' : 'Repair COGS'}
+                </button>
                 <button 
                   onClick={() => setIsAddingJournalEntry(true)}
                   className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all"
@@ -1661,6 +2443,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                 </button>
               </div>
             </div>
+
+            {cogsRepairState.message && (
+              <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50 text-amber-800 text-sm font-semibold">
+                {cogsRepairState.message}
+              </div>
+            )}
 
             <div className="bg-card border border-border shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
@@ -1887,7 +2675,14 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                       <select 
                         className="w-full p-4 bg-background border border-border rounded-2xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
                         value={billForm.vendorId}
-                        onChange={e => setBillForm({...billForm, vendorId: e.target.value})}
+                        onChange={e => {
+                          const selectedVendor = vendors.find(v => v.id === e.target.value);
+                          setBillForm({
+                            ...billForm,
+                            vendorId: e.target.value,
+                            subsidiaryId: selectedVendor?.subsidiaryId || billForm.subsidiaryId || ''
+                          });
+                        }}
                       >
                         <option value="">Select Vendor...</option>
                         {vendors.map(v => (
@@ -2074,9 +2869,18 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                     {bills
                       .filter(b => 
                         b.description?.toLowerCase().includes(accountingSearch.toLowerCase()) ||
-                        vendors.find(v => v.id === b.vendorId)?.name.toLowerCase().includes(accountingSearch.toLowerCase())
+                        (vendors.find(v => v.id === (b.vendorId || b.supplierId))?.name || b.supplierName || '').toLowerCase().includes(accountingSearch.toLowerCase())
                       )
-                      .map(b => (
+                      .map(b => {
+                        const billTotal = getBillTotalAmount(b);
+                        const billOutstanding = getBillOutstandingAmount(b);
+                        const isFullyPaid = billOutstanding === 0 && billTotal > 0;
+                        const settlementDraft = billSettlementForm[b.id] || {
+                          accountId: '1101',
+                          amount: (billOutstanding / 100).toFixed(2)
+                        };
+
+                        return (
                         <React.Fragment key={b.id}>
                           <tr 
                             onClick={() => setExpandedBillId(expandedBillId === b.id ? null : b.id)}
@@ -2087,16 +2891,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                               {b.dueDate}
                             </td>
                             <td className="px-6 py-4 text-sm font-bold text-foreground">
-                              {vendors.find(v => v.id === b.vendorId)?.name || 'Unknown Vendor'}
+                              {vendors.find(v => v.id === (b.vendorId || b.supplierId))?.name || b.supplierName || 'Unknown Vendor'}
                             </td>
                             <td className="px-6 py-4">
                               <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase ${
-                                b.status === 'paid' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-orange-500/20 text-orange-400'
+                                isFullyPaid ? 'bg-emerald-500/20 text-emerald-400' : 'bg-orange-500/20 text-orange-400'
                               }`}>
-                                {b.status}
+                                {isFullyPaid ? 'paid' : 'unpaid'}
                               </span>
                             </td>
-                            <td className="px-6 py-4 text-sm font-black text-right">{formatCurrency(b.amount)}</td>
+                            <td className="px-6 py-4 text-sm font-black text-right">{formatCurrency(billTotal)}</td>
                           </tr>
                           {expandedBillId === b.id && (
                              <tr className="bg-background/50 border-b border-border">
@@ -2129,7 +2933,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                      <div className="space-y-4">
                                         <h4 className="text-xs font-black uppercase text-muted-foreground tracking-widest flex items-center gap-2">
                                           <BookOpen size={14} /> Associated Journal Entry
-                                        </h4                                         {(() => {
+                                        </h4>
+                                        {(() => {
                                           const matchingJournal = journalEntries.find(j => j.reference === `BILL-${b.id.slice(-6).toUpperCase()}`);
                                           if (matchingJournal) {
                                             return (
@@ -2156,55 +2961,125 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                                           }
                                           return <div className="bg-background rounded-xl border border-dashed border-border py-8 text-center text-[11px] font-bold text-muted-foreground">No linked journal found.</div>
                                         })()}
-                                        {b.status !== 'paid' && (
-                                          <div className="mt-4 flex justify-end">
-                                            <button
-                                              onClick={async (e) => {
-                                                e.stopPropagation();
-                                                try {
-                                                  // Update bill to paid
-                                                  await updateDoc(doc(db, 'bills', b.id), {
-                                                    status: 'paid',
-                                                    amountPaid: b.totalAmount || b.amount || 0,
-                                                    paidAt: serverTimestamp()
-                                                  });
-                                                  
-                                                  // If it has a purchase order linked, we might want to update it, but here it's mainly bills
-                                                  const poId = b.poId;
-                                                  if (poId) {
-                                                    // In our updated purchasing flow we might not need this if PO is 'received'
-                                                    // But just in case
-                                                  }
+                                        {billOutstanding > 0 && (
+                                          <div className="mt-4 p-4 bg-background rounded-xl border border-border">
+                                            <div className="flex flex-col md:flex-row md:items-end gap-3">
+                                              <div className="flex-1 space-y-1">
+                                                <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Payment Account</label>
+                                                <select
+                                                  value={settlementDraft.accountId}
+                                                  onChange={(e) => setBillSettlementForm(prev => ({
+                                                    ...prev,
+                                                    [b.id]: { ...settlementDraft, accountId: e.target.value }
+                                                  }))}
+                                                  className="w-full p-3 bg-card border border-border rounded-xl text-xs font-bold focus:ring-2 focus:ring-primary outline-none"
+                                                >
+                                                  {billPaymentAccounts.map(acc => (
+                                                    <option key={acc.id} value={acc.code || acc.id}>{acc.name} ({acc.code})</option>
+                                                  ))}
+                                                </select>
+                                              </div>
+                                              <div className="w-full md:w-44 space-y-1">
+                                                <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Settle Amount</label>
+                                                <input
+                                                  type="number"
+                                                  min="0"
+                                                  step="0.01"
+                                                  value={settlementDraft.amount}
+                                                  onChange={(e) => setBillSettlementForm(prev => ({
+                                                    ...prev,
+                                                    [b.id]: { ...settlementDraft, amount: e.target.value }
+                                                  }))}
+                                                  className="w-full p-3 bg-card border border-border rounded-xl text-sm font-bold focus:ring-2 focus:ring-primary outline-none"
+                                                />
+                                              </div>
+                                              <button
+                                                onClick={async (e) => {
+                                                  e.stopPropagation();
+                                                  try {
+                                                    const settleAmount = Math.round(Number(settlementDraft.amount || 0) * 100);
+                                                    const outstanding = getBillOutstandingAmount(b);
+                                                    const settleAgainstBill = Math.min(settleAmount, outstanding);
+                                                    const vendorCreditIncrease = Math.max(settleAmount - outstanding, 0);
 
-                                                  // We also need to record a journal entry for the payment
-                                                  await addDoc(collection(db, 'journal_entries'), {
-                                                    date: new Date().toISOString().split('T')[0],
-                                                    reference: `PAY-${b.id.slice(-6).toUpperCase()}`,
-                                                    description: `Payment for Bill ${b.invoiceNumber || b.id.slice(-6).toUpperCase()}`,
-                                                    timestamp: serverTimestamp(),
-                                                    lines: [
-                                                      { accountId: '2101', accountName: 'Accounts Payable', debit: Math.round((b.totalAmount || b.amount || 0) * 100), credit: 0 },
-                                                      { accountId: '1101', accountName: 'Cash on Hand', debit: 0, credit: Math.round((b.totalAmount || b.amount || 0) * 100) }
-                                                    ]
-                                                  });
-                                                } catch (err) {
-                                                  console.error("Error settling bill:", err);
-                                                  alert("Failed to settle bill.");
-                                                }
-                                              }}
-                                              className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition-colors"
-                                            >
-                                              Settle Payment
-                                            </button>
+                                                    if (!settleAmount || settleAmount <= 0) {
+                                                      alert('Enter a valid settlement amount.');
+                                                      return;
+                                                    }
+
+                                                    const nextAmountPaid = getBillPaidAmount(b) + settleAgainstBill;
+                                                    const isNowPaid = nextAmountPaid >= getBillTotalAmount(b);
+                                                    const paymentAccount = billPaymentAccounts.find(acc => (acc.code || acc.id) === settlementDraft.accountId);
+                                                    const vendorId = b.vendorId || b.supplierId;
+                                                    const vendor = vendors.find(v => v.id === vendorId);
+                                                    const resolvedSubsidiaryId = b.subsidiaryId || (vendorId && vendor ? await ensureSupplierSubsidiary(vendorId, vendor.name, vendor.subsidiaryId) : '');
+
+                                                    await updateDoc(doc(db, 'bills', b.id), {
+                                                      status: isNowPaid ? 'paid' : 'unpaid',
+                                                      amountPaid: nextAmountPaid,
+                                                      paidAt: isNowPaid ? serverTimestamp() : null,
+                                                      updatedAt: serverTimestamp()
+                                                    });
+
+                                                    if (vendorId && vendorCreditIncrease > 0) {
+                                                      await updateDoc(doc(db, 'vendors', vendorId), {
+                                                        creditBalance: increment(vendorCreditIncrease),
+                                                        updatedAt: serverTimestamp()
+                                                      });
+                                                    }
+
+                                                    const journalLines: any[] = [];
+                                                    if (settleAgainstBill > 0) {
+                                                      journalLines.push({ accountId: '2101', accountName: 'Accounts Payable', debit: settleAgainstBill, credit: 0 });
+                                                    }
+                                                    if (vendorCreditIncrease > 0) {
+                                                      journalLines.push({ accountId: '1103', accountName: 'Accounts Receivable', debit: vendorCreditIncrease, credit: 0 });
+                                                    }
+                                                    journalLines.push({
+                                                      accountId: settlementDraft.accountId,
+                                                      accountName: paymentAccount?.name || 'Payment Account',
+                                                      debit: 0,
+                                                      credit: settleAmount
+                                                    });
+
+                                                    await addDoc(collection(db, 'journal_entries'), {
+                                                      date: new Date().toISOString().split('T')[0],
+                                                      reference: `PAY-${b.id.slice(-6).toUpperCase()}`,
+                                                      description: `Payment for Bill ${b.invoiceNumber || b.id.slice(-6).toUpperCase()}`,
+                                                      subsidiaryId: resolvedSubsidiaryId,
+                                                      timestamp: serverTimestamp(),
+                                                      lines: journalLines
+                                                    });
+
+                                                    setBillSettlementForm(prev => ({
+                                                      ...prev,
+                                                      [b.id]: {
+                                                        accountId: settlementDraft.accountId,
+                                                        amount: '0.00'
+                                                      }
+                                                    }));
+                                                  } catch (err) {
+                                                    console.error('Error settling bill:', err);
+                                                    alert('Failed to settle bill.');
+                                                  }
+                                                }}
+                                                className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl text-xs font-bold transition-colors"
+                                              >
+                                                Settle
+                                              </button>
+                                            </div>
+                                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mt-3">
+                                              Outstanding: {formatCurrency(billOutstanding)}
+                                            </p>
                                           </div>
                                         )}
                                      </div>
                                   </div>
                                </td>
-                             </tr>r>
+                             </tr>
                           )}
                         </React.Fragment>
-                      ))}
+                      )})}
                   </tbody>
                 </table>
               </div>
@@ -3722,7 +4597,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <Dashboard onNavigate={(tab) => setActiveTab(tab as any)} systemSettings={systemSettings} />;
+        return <Dashboard onNavigate={(tab) => setActiveTab(tab as any)} systemSettings={systemSettings} currentUserName={loggedInDisplayName} />;
       case 'crm':
         return <CRM systemSettings={systemSettings} />;
       case 'users':
@@ -3835,15 +4710,17 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           </div>
         );
       case 'suppliers':
-        return <SuppliersSection suppliers={vendors} bills={bills} />;
+        return <SuppliersSection suppliers={vendors} bills={bills} journal={journal} journalEntries={journalEntries} />;
       case 'purchases':
-        return <PurchasesSection suppliers={vendors} inventory={inventory} bills={bills} ledgerGroups={ledgerGroups} />;
+        return <PurchasesSection suppliers={vendors} inventory={inventory} bills={bills} />;
       case 'delivery':
         return <DeliverySection drivers={drivers} searchQuery={deliverySearchQuery} setSearchQuery={setDeliverySearchQuery} />;
       case 'production':
         return <ProductionSection inventory={inventory} items={items} />;
       case 'inventory':
         return renderInventoryTab();
+      case 'stock_ops':
+        return <StockOperationsSection inventory={inventory} vendors={vendors} />;
       case 'accounting':
         return renderAccountingTab();
       case 'finance':
@@ -3869,7 +4746,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       case 'feedback':
         return <FeedbackSection />;
       default:
-        return <Dashboard onNavigate={(tab) => setActiveTab(tab as any)} />;
+        return <Dashboard onNavigate={(tab) => setActiveTab(tab as any)} currentUserName={loggedInDisplayName} />;
     }
   };
 
@@ -3999,6 +4876,9 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       const stockMovementsSnapshot = await getDocs(collection(db, 'stock_movements'));
       const stockMovementsDeletes = stockMovementsSnapshot.docs.map(d => deleteDoc(doc(db, 'stock_movements', d.id)));
 
+      const stockFlowSnapshot = await getDocs(collection(db, 'stock_flow'));
+      const stockFlowDeletes = stockFlowSnapshot.docs.map(d => deleteDoc(doc(db, 'stock_flow', d.id)));
+
       // Execute all deletes
       await Promise.all([
         ...orderDeletes, 
@@ -4014,21 +4894,17 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         ...productionDeletes,
         ...notificationDeletes,
         ...poDeletes,
-        ...stockMovementsDeletes
+        ...stockMovementsDeletes,
+        ...stockFlowDeletes,
       ]);
 
-      // 6. Reset Inventory Stock and Cost
+      // 6. Clear Inventory Data
       const inventorySnapshot = await getDocs(collection(db, 'inventory'));
-      console.log(`Resetting ${inventorySnapshot.size} inventory items...`);
-      const inventoryUpdates = inventorySnapshot.docs.map(d => 
-        updateDoc(doc(db, 'inventory', d.id), {
-          stock: 0,
-          costPerUnit: 0,
-          averageCost: 0,
-          lastUpdated: serverTimestamp()
-        })
+      console.log(`Deleting ${inventorySnapshot.size} inventory items...`);
+      const inventoryDeletes = inventorySnapshot.docs.map(d => 
+        deleteDoc(doc(db, 'inventory', d.id))
       );
-      await Promise.all(inventoryUpdates);
+      await Promise.all(inventoryDeletes);
 
       // 7. Reset Tables
       const tablesSnapshot = await getDocs(collection(db, 'tables'));
@@ -4106,11 +4982,16 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     e.description?.toLowerCase().includes('sale')
   ).length;
 
-  const isDeveloper = user?.email === 'ashkan.yaghtin@gmail.com';
-  // PROTOTYPE POLICY: Anonymous (Guest) is the primary Restaurant Admin. 
-  // Regular Email sign-in (non-developer) is treated as a Customer.
-  const isAdmin = user?.isAnonymous || profile?.role === 'admin' || isDeveloper;
-  const userRole = isAdmin ? 'admin' : (profile?.role || 'waiter');
+  const profileRole = String(profile?.role || '').toLowerCase();
+  const sessionRole = String(sessionStorage.getItem('adminRole') || '').toLowerCase();
+  const loggedInDisplayName =
+    String(sessionStorage.getItem('activeStaffName') || '').trim() ||
+    String(profile?.displayName || '').trim() ||
+    String(user?.displayName || '').trim() ||
+    String(user?.email || '').trim() ||
+    'Unknown User';
+  const isAdmin = profileRole === 'admin' || sessionRole === 'admin';
+  const userRole = isAdmin ? 'admin' : (profileRole || sessionRole || 'waiter');
 
   const canAccess = (tab: string) => {
     // Feature Toggles (Global override)
@@ -4134,6 +5015,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         return ['manager', 'chef', 'driver', 'waiter'].includes(userRole);
       case 'kitchen':
       case 'inventory':
+      case 'stock_ops':
       case 'stock_flow':
       case 'menu':
         return ['manager', 'chef'].includes(userRole);
@@ -4180,14 +5062,13 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     name: '',
     stock: 0,
     unit: '',
-    costPerUnit: 0,
     lowStockThreshold: 10,
     category: 'raw_material'
   });
-  const [adjustingStock, setAdjustingStock] = useState<{ id: string, type: 'add' | 'remove', amount: number, price?: number, supplierId?: string } | null>(null);
+  const [adjustingStock, setAdjustingStock] = useState<{ id: string, type: 'add' | 'remove', amount: number } | null>(null);
   const [editingInventoryId, setEditingInventoryId] = useState<string | null>(null);
   const [editInventoryForm, setEditInventoryForm] = useState<Partial<InventoryItem>>({});
-  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState<'all' | 'raw_material' | 'finished_good'>('all');
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState<'all' | 'raw_material' | 'finished_good'>('raw_material');
 
   // Order Management Filters
   const [orderFilters, setOrderFilters] = useState({
@@ -4219,6 +5100,10 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
   const [wastage, setWastage] = useState<any[]>([]);
   const [systemSettings, setSystemSettings] = useState<any>({});
   const [journalClasses, setJournalClasses] = useState<any[]>([]);
+  const [posBreakEvents, setPosBreakEvents] = useState<any[]>([]);
+  const [posCashTransactions, setPosCashTransactions] = useState<any[]>([]);
+  const [orderStateHistory, setOrderStateHistory] = useState<any[]>([]);
+  const [savedPosPrints, setSavedPosPrints] = useState<any[]>([]);
 
   // Accounting Modals
   const [isAddingVoucher, setIsAddingVoucher] = useState(false);
@@ -4362,6 +5247,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     classId: '',
     items: [] as { inventoryItemId: string, name: string, quantity: number, price: number }[]
   });
+  const [billSettlementForm, setBillSettlementForm] = useState<Record<string, { accountId: string; amount: string }>>({});
   const [chequeForm, setChequeForm] = useState({ chequeNumber: '', bank: '', amount: 0, date: new Date().toISOString().split('T')[0], status: 'pending', vendorId: '', subsidiaryId: '', classId: '' });
   const [vendorForm, setVendorForm] = useState({ name: '', phone: '', email: '', address: '' });
   const [journalEntryForm, setJournalEntryForm] = useState({
@@ -4377,13 +5263,112 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     ]
   });
 
+  const billPaymentAccounts = useMemo(() => {
+    return ledgerGroups.filter(g => g.type === 'Asset' && g.isAccount);
+  }, [ledgerGroups]);
+
+  const sharedSupplierSubsidiaryName = 'Suppliers Subsidiary';
+  const sharedSupplierSubsidiaryId = 'shared-suppliers';
+
+  const ensureSupplierSubsidiary = async (vendorId: string, vendorName: string, existingSubsidiaryId?: string) => {
+    const existingShared = subsidiaries.find(sub => sub.id === sharedSupplierSubsidiaryId || (sub.name === sharedSupplierSubsidiaryName && sub.type === 'supplier'));
+    const subsidiaryId = existingShared?.id || sharedSupplierSubsidiaryId;
+
+    await setDoc(doc(db, 'subsidiaries', subsidiaryId), {
+      name: sharedSupplierSubsidiaryName,
+      type: 'supplier',
+      parentAccountCode: '2101',
+      parentAccountName: 'Accounts Payable',
+      sourceCollection: 'vendors',
+      sourceId: 'shared-suppliers',
+      isSharedBucket: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await updateDoc(doc(db, 'vendors', vendorId), {
+      subsidiaryId,
+      updatedAt: serverTimestamp(),
+    });
+
+    return subsidiaryId;
+  };
+
+  const ensureSupplierLedgerAccount = async (vendorId: string, vendorName: string) => {
+    const existingAccount = ledgerGroups.find((group) => {
+      const sourceId = (group as any).sourceId;
+      const sourceCollection = (group as any).sourceCollection;
+      return group.isAccount && sourceCollection === 'vendors' && sourceId === vendorId;
+    });
+
+    if (existingAccount) return existingAccount.id;
+
+    const accountCode = `2101-${vendorId.slice(0, 4).toUpperCase()}`;
+    const existingCode = ledgerGroups.find(g => g.code === accountCode);
+    if (existingCode) return existingCode.id;
+
+    const ledgerRef = doc(db, 'ledgerGroups', accountCode);
+    await setDoc(ledgerRef, {
+      code: accountCode,
+      name: `AP - ${vendorName}`,
+      type: 'Liability',
+      isAccount: true,
+      parentGroupId: '2101',
+      sourceCollection: 'vendors',
+      sourceId: vendorId,
+      description: `Accounts Payable for ${vendorName}`,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await updateDoc(doc(db, 'vendors', vendorId), {
+      ledgerAccountCode: accountCode,
+      updatedAt: serverTimestamp(),
+    });
+
+    return accountCode;
+  };
+
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'staff'), orderBy('name'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setStaff(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+    let staffRows: any[] = [];
+    let usersRows: any[] = [];
+
+    const applyRows = () => {
+      const normalizedUsers = usersRows.map((row) => ({
+        id: row.id,
+        uid: row.uid || row.id,
+        name: row.name || row.displayName || row.email || 'Staff',
+        email: row.email || '',
+        role: String(row.role || 'waiter').toLowerCase(),
+        terminalId: row.terminalId || null,
+        storeId: row.storeId || null,
+        permissions: row.permissions || {},
+        active: typeof row.active === 'boolean' ? row.active : true,
+      }));
+
+      const merged = mergeEntityRows(staffRows, normalizedUsers);
+      setStaff(merged);
+    };
+
+    const unsubStaff = onSnapshot(query(collection(db, 'staff'), orderBy('name')), (snapshot) => {
+      staffRows = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyRows();
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'staff'));
-    return () => unsubscribe();
+
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      usersRows = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyRows();
+    }, () => {
+      usersRows = [];
+      applyRows();
+    });
+
+    return () => {
+      unsubStaff();
+      unsubUsers();
+    };
   }, [user]);
 
   useEffect(() => {
@@ -4397,29 +5382,80 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'warehouses'), orderBy('name'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setWarehouses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+    let warehouseRowsA: any[] = [];
+    let warehouseRowsB: any[] = [];
+    const applyWarehouses = () => setWarehouses(mergeEntityRows(warehouseRowsA, warehouseRowsB));
+
+    const unsubWarehouses = onSnapshot(query(collection(db, 'warehouses'), orderBy('name')), (snapshot) => {
+      warehouseRowsA = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyWarehouses();
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'warehouses'));
-    return () => unsubscribe();
+
+    const unsubWarehouseLegacy = onSnapshot(collection(db, 'warehouse'), (snapshot) => {
+      warehouseRowsB = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyWarehouses();
+    }, () => {
+      warehouseRowsB = [];
+      applyWarehouses();
+    });
+
+    return () => {
+      unsubWarehouses();
+      unsubWarehouseLegacy();
+    };
   }, [user]);
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'mobileUnits'), orderBy('name'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setMobileUnits(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+    let mobileRowsA: any[] = [];
+    let mobileRowsB: any[] = [];
+    const applyMobiles = () => setMobileUnits(mergeEntityRows(mobileRowsA, mobileRowsB));
+
+    const unsubMobiles = onSnapshot(query(collection(db, 'mobileUnits'), orderBy('name')), (snapshot) => {
+      mobileRowsA = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyMobiles();
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'mobileUnits'));
-    return () => unsubscribe();
+
+    const unsubMobilesLegacy = onSnapshot(collection(db, 'mobile_units'), (snapshot) => {
+      mobileRowsB = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyMobiles();
+    }, () => {
+      mobileRowsB = [];
+      applyMobiles();
+    });
+
+    return () => {
+      unsubMobiles();
+      unsubMobilesLegacy();
+    };
   }, [user]);
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'terminals'), orderBy('name'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setTerminals(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+    let terminalRowsA: any[] = [];
+    let terminalRowsB: any[] = [];
+    const applyTerminals = () => setTerminals(mergeEntityRows(terminalRowsA, terminalRowsB));
+
+    const unsubTerminals = onSnapshot(query(collection(db, 'terminals'), orderBy('name')), (snapshot) => {
+      terminalRowsA = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyTerminals();
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'terminals'));
-    return () => unsubscribe();
+
+    const unsubTerminalLegacy = onSnapshot(collection(db, 'terminal'), (snapshot) => {
+      terminalRowsB = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyTerminals();
+    }, () => {
+      terminalRowsB = [];
+      applyTerminals();
+    });
+
+    return () => {
+      unsubTerminals();
+      unsubTerminalLegacy();
+    };
   }, [user]);
 
   useEffect(() => {
@@ -4451,12 +5487,9 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'staff'), where('role', '==', 'driver'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setDrivers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'staff'));
-    return () => unsubscribe();
-  }, [user]);
+    const normalizedDrivers = staff.filter((member) => String(member?.role || '').toLowerCase() === 'driver');
+    setDrivers(normalizedDrivers);
+  }, [user, staff]);
 
   useEffect(() => {
     if (!user) return;
@@ -4478,6 +5511,106 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    let breakRowsA: any[] = [];
+    let breakRowsB: any[] = [];
+    let cashRowsA: any[] = [];
+    let cashRowsB: any[] = [];
+    let stateRowsA: any[] = [];
+    let stateRowsB: any[] = [];
+    let printRowsA: any[] = [];
+    let printRowsB: any[] = [];
+
+    const applyBreakRows = () => {
+      const merged = [...breakRowsA, ...breakRowsB];
+      merged.sort((a: any, b: any) => resolveTimestampMs(b.at || b.createdAt || b.date) - resolveTimestampMs(a.at || a.createdAt || a.date));
+      setPosBreakEvents(merged.slice(0, 200));
+    };
+
+    const applyCashRows = () => {
+      const merged = [...cashRowsA, ...cashRowsB];
+      merged.sort((a: any, b: any) => resolveTimestampMs(b.date || b.at || b.createdAt) - resolveTimestampMs(a.date || a.at || a.createdAt));
+      setPosCashTransactions(merged.slice(0, 200));
+    };
+
+    const applyStateRows = () => {
+      const merged = [...stateRowsA, ...stateRowsB];
+      merged.sort((a: any, b: any) => resolveTimestampMs(b.at || b.createdAt || b.date) - resolveTimestampMs(a.at || a.createdAt || a.date));
+      setOrderStateHistory(merged.slice(0, 200));
+    };
+
+    const applyPrintRows = () => {
+      const merged = [...printRowsA, ...printRowsB];
+      merged.sort((a: any, b: any) => resolveTimestampMs(b.createdAt || b.at || b.date) - resolveTimestampMs(a.createdAt || a.at || a.date));
+      setSavedPosPrints(merged.slice(0, 200));
+    };
+
+    const unsubBreakEvents = onSnapshot(collection(db, 'pos_session_break_events'), (snapshot) => {
+      breakRowsA = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyBreakRows();
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'pos_session_break_events'));
+
+    const unsubBreakEventsLegacy = onSnapshot(collection(db, 'pos_session_break_event'), (snapshot) => {
+      breakRowsB = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyBreakRows();
+    }, () => {
+      breakRowsB = [];
+      applyBreakRows();
+    });
+
+    const unsubCashChanges = onSnapshot(collection(db, 'pos_change_cash_transactions'), (snapshot) => {
+      cashRowsA = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyCashRows();
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'pos_change_cash_transactions'));
+
+    const unsubCashChangesLegacy = onSnapshot(collection(db, 'pos_change_cash_transaction'), (snapshot) => {
+      cashRowsB = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyCashRows();
+    }, () => {
+      cashRowsB = [];
+      applyCashRows();
+    });
+
+    const unsubStateHistory = onSnapshot(collection(db, 'order_state_history'), (snapshot) => {
+      stateRowsA = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyStateRows();
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'order_state_history'));
+
+    const unsubStateHistoryLegacy = onSnapshot(collection(db, 'status_change_record'), (snapshot) => {
+      stateRowsB = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyStateRows();
+    }, () => {
+      stateRowsB = [];
+      applyStateRows();
+    });
+
+    const unsubPrints = onSnapshot(collection(db, 'saved_pos_print'), (snapshot) => {
+      printRowsA = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyPrintRows();
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'saved_pos_print'));
+
+    const unsubPrintsLegacy = onSnapshot(collection(db, 'saved_pos_prints'), (snapshot) => {
+      printRowsB = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      applyPrintRows();
+    }, () => {
+      printRowsB = [];
+      applyPrintRows();
+    });
+
+    return () => {
+      unsubBreakEvents();
+      unsubBreakEventsLegacy();
+      unsubCashChanges();
+      unsubCashChangesLegacy();
+      unsubStateHistory();
+      unsubStateHistoryLegacy();
+      unsubPrints();
+      unsubPrintsLegacy();
+    };
+  }, [user, accountingSubTab]);
 
   useEffect(() => {
     if (!user) return;
@@ -4521,10 +5654,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       const groups = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as LedgerGroup));
       setLedgerGroups(groups);
       
-      // Auto-initialize if empty
-      if (snapshot.empty && isDeveloper) {
-        initializeDefaultCOA();
-      }
+      // Keep data source explicit; no hidden developer auto-seeding.
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'ledgerGroups'));
 
     const unsubSubsidiaries = onSnapshot(collection(db, 'subsidiaries'), (snapshot) => {
@@ -4540,15 +5670,46 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       unsubSubsidiaries();
       unsubClasses();
     };
-  }, [user, isDeveloper]);
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'inventory'), orderBy('name'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setInventory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem)));
+
+    let inventoryRowsA: any[] = [];
+    let inventoryRowsB: any[] = [];
+    let inventoryRowsC: any[] = [];
+    const applyInventory = () => {
+      const mergedRows = mergeEntityRows(mergeEntityRows(inventoryRowsA, inventoryRowsB), inventoryRowsC)
+        .map((row) => normalizeInventoryRow(row));
+      setInventory(mergedRows as InventoryItem[]);
+    };
+
+    const unsubInventory = onSnapshot(query(collection(db, 'inventory'), orderBy('name')), (snapshot) => {
+      inventoryRowsA = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyInventory();
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'inventory'));
-    return () => unsubscribe();
+
+    const unsubInventoryLegacy = onSnapshot(collection(db, 'inventory_items'), (snapshot) => {
+      inventoryRowsB = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyInventory();
+    }, () => {
+      inventoryRowsB = [];
+      applyInventory();
+    });
+
+    const unsubStockItem = onSnapshot(collection(db, 'stock_item'), (snapshot) => {
+      inventoryRowsC = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      applyInventory();
+    }, () => {
+      inventoryRowsC = [];
+      applyInventory();
+    });
+
+    return () => {
+      unsubInventory();
+      unsubInventoryLegacy();
+      unsubStockItem();
+    };
   }, [user]);
 
   const [showAddTransaction, setShowAddTransaction] = useState(false);
@@ -4568,6 +5729,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       await addDoc(collection(db, 'journal'), {
         ...newTransaction,
         amount: amountInCents,
+        sourceType: 'manual_transaction',
         timestamp: serverTimestamp()
       });
 
@@ -4576,6 +5738,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         date: new Date().toISOString().split('T')[0],
         reference: `MAN-${Date.now().toString().slice(-6)}`,
         description: newTransaction.description,
+        sourceType: 'manual_transaction',
         type: newTransaction.type,
         subsidiaryId: newTransaction.subsidiaryId,
         classId: newTransaction.classId,
@@ -4600,6 +5763,82 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       setNewTransaction({ type: 'expense', amount: 0, description: '' });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'journal');
+    }
+  };
+
+  const repairHistoricalCogsEntries = async () => {
+    if (cogsRepairState.running) return;
+    const confirmed = window.confirm('Repair historical COGS entries that were posted with the old 100x cost bug? This will update matching journal entries in Firestore.');
+    if (!confirmed) return;
+
+    setCogsRepairState({ running: true, message: 'Scanning journal entries...' });
+
+    const isSaleRelatedEntry = (entry: any) => {
+      const reference = String(entry?.reference || '').toUpperCase();
+      const description = String(entry?.description || '').toLowerCase();
+      return Boolean(entry?.orderId) || entry?.sourceType === 'order' || reference.startsWith('ORD-') || reference.startsWith('POS-') || description.includes('sale');
+    };
+
+    const isTargetLine = (line: any) => {
+      const accountId = String(line?.accountId || '');
+      const accountName = String(line?.accountName || '').toLowerCase();
+      return accountId === '5101' || accountId === '1105' || accountName.includes('cost of goods sold') || accountName.includes('inventory');
+    };
+
+    try {
+      const snapshot = await getDocs(collection(db, 'journal_entries'));
+      const updates: Promise<unknown>[] = [];
+      let repairedCount = 0;
+
+      snapshot.docs.forEach((entryDoc) => {
+        const entry = entryDoc.data() as any;
+        const lines = Array.isArray(entry.lines) ? entry.lines : [];
+        if (!lines.length || entry.cogsRepairV1 || !isSaleRelatedEntry(entry)) return;
+
+        const targetValues = lines
+          .filter(isTargetLine)
+          .map((line: any) => Math.max(toSafeNumber(line.debit || 0), toSafeNumber(line.credit || 0)))
+          .filter((value: number) => value > 0);
+
+        if (targetValues.length === 0) return;
+
+        const largestTarget = Math.max(...targetValues);
+        const revenueLine = lines.find((line: any) => {
+          const accountId = String(line?.accountId || '');
+          const accountName = String(line?.accountName || '').toLowerCase();
+          return accountId === '4101' || accountName.includes('sales revenue') || accountName.includes('revenue');
+        });
+        const revenueAmount = revenueLine ? Math.max(toSafeNumber(revenueLine.debit || 0), toSafeNumber(revenueLine.credit || 0)) : 0;
+
+        const looksInflated = largestTarget >= 10000 && largestTarget % 100 === 0 && (revenueAmount === 0 || largestTarget > revenueAmount * 3);
+        if (!looksInflated) return;
+
+        const repairedLines = lines.map((line: any) => {
+          if (!isTargetLine(line)) return line;
+          const debit = toSafeNumber(line.debit || 0);
+          const credit = toSafeNumber(line.credit || 0);
+          if (debit > 0) return { ...line, debit: Math.round(debit / 100), credit: 0 };
+          if (credit > 0) return { ...line, debit: 0, credit: Math.round(credit / 100) };
+          return line;
+        });
+
+        updates.push(updateDoc(doc(db, 'journal_entries', entryDoc.id), {
+          lines: repairedLines,
+          cogsRepairV1: true,
+          cogsRepairAt: serverTimestamp(),
+        }));
+        repairedCount += 1;
+      });
+
+      await Promise.all(updates);
+
+      setCogsRepairState({
+        running: false,
+        message: repairedCount > 0 ? `Repaired ${repairedCount} historical journal entries.` : 'No inflated COGS records found.',
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'journal_entries/cogs-repair');
+      setCogsRepairState({ running: false, message: 'COGS repair failed. Check permissions and retry.' });
     }
   };
 
@@ -4637,6 +5876,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         description: voucherForm.description,
         subsidiaryId: voucherForm.subsidiaryId,
         classId: voucherForm.classId,
+        sourceType: 'voucher',
         timestamp: serverTimestamp(),
         lines: [
           { accountId: debitAccount, accountName: debitName, debit: voucherData.amount, credit: 0 },
@@ -4653,9 +5893,25 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleAddBill = async () => {
     try {
+      const vendor = vendors.find(v => v.id === billForm.vendorId);
+      const amountInCents = Math.round(Number(billForm.amount || 0) * 100);
+      const isMarkedPaid = billForm.status === 'paid';
+      const resolvedSubsidiaryId = billForm.subsidiaryId || (vendor ? await ensureSupplierSubsidiary(vendor.id, vendor.name, vendor.subsidiaryId) : '');
+      if (vendor) {
+        await ensureSupplierLedgerAccount(vendor.id, vendor.name);
+      }
+
       const billData = {
         ...billForm,
-        amount: Math.round(billForm.amount * 100),
+        type: 'purchase',
+        amount: amountInCents,
+        totalAmount: amountInCents,
+        amountPaid: isMarkedPaid ? amountInCents : 0,
+        supplierId: billForm.vendorId,
+        vendorId: billForm.vendorId,
+        supplierName: vendor?.name || '',
+        subsidiaryId: resolvedSubsidiaryId,
+        sourceType: 'bill',
         createdAt: serverTimestamp()
       };
       
@@ -4689,15 +5945,21 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       // Create Journal Entry for the Bill
       const journalLines = [
         { accountId: '1105', accountName: 'Inventory Asset', debit: billData.amount, credit: 0 },
-        { accountId: '2101', accountName: 'Accounts Payable', debit: 0, credit: billData.amount }
+        ...(isMarkedPaid
+          ? [{ accountId: '1101', accountName: 'Cash on Hand', debit: 0, credit: billData.amount }]
+          : [{ accountId: '2101', accountName: 'Accounts Payable', debit: 0, credit: billData.amount }])
       ];
 
       await addDoc(collection(db, 'journal_entries'), {
         date: new Date().toISOString().split('T')[0],
         reference: `BILL-${billRef.id.slice(-6).toUpperCase()}`,
         description: `Purchase from ${vendors.find(v => v.id === billForm.vendorId)?.name || 'Vendor'}`,
-        subsidiaryId: billForm.subsidiaryId,
+        subsidiaryId: resolvedSubsidiaryId,
         classId: billForm.classId,
+        billId: billRef.id,
+        vendorId: billForm.vendorId,
+        supplierId: billForm.vendorId,
+        sourceType: 'bill',
         timestamp: serverTimestamp(),
         lines: journalLines
       });
@@ -4734,10 +5996,19 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleAddVendor = async () => {
     try {
-      await addDoc(collection(db, 'vendors'), {
+      const vendorRef = await addDoc(collection(db, 'vendors'), {
         ...vendorForm,
+        subsidiaryId: sharedSupplierSubsidiaryId,
         createdAt: serverTimestamp()
       });
+
+      await updateDoc(doc(db, 'vendors', vendorRef.id), {
+        subsidiaryId: sharedSupplierSubsidiaryId,
+        updatedAt: serverTimestamp(),
+      });
+
+      await ensureSupplierLedgerAccount(vendorRef.id, vendorForm.name);
+
       setIsAddingVendor(false);
       setVendorForm({ name: '', phone: '', email: '', address: '' });
     } catch (err) {
@@ -4818,16 +6089,43 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
               image: row.Image || ''
             });
           } else if (type === 'inventory') {
-            const costCents = Math.round((Number(row.CostPerUnit) || 0) * 100);
-            await addDoc(collection(db, 'inventory'), {
+            const importedStock = Number(row.Stock || 0) || 0;
+            const importedThreshold = Number(row.LowStockThreshold || 10) || 10;
+            const importedUnit = row.Unit || 'pcs';
+            const importedCategory = row.Category || 'raw_material';
+            const inventoryRef = await addDoc(collection(db, 'inventory'), {
               name: row.Name,
-              stock: row.Stock || 0,
-              unit: row.Unit || 'pcs',
-              costPerUnit: costCents,
-              averageCost: costCents,
-              lowStockThreshold: row.LowStockThreshold || 10,
+              stock: importedStock,
+              unit: importedUnit,
+              costPerUnit: 0,
+              averageCost: 0,
+              category: importedCategory,
+              lowStockThreshold: importedThreshold,
+              item_name: row.Name,
+              item_id: row.Name,
+              stock_item_id: row.Name,
+              qty: importedStock,
+              uom: importedUnit,
+              reorder_level: importedThreshold,
+              item_unit_cost: 0,
+              item_type: importedCategory === 'finished_good' ? 2 : 1,
               lastUpdated: serverTimestamp()
             });
+
+            await setDoc(doc(db, 'stock_item', inventoryRef.id), {
+              id: inventoryRef.id,
+              item_id: inventoryRef.id,
+              stock_item_id: inventoryRef.id,
+              item_name: row.Name,
+              qty: importedStock,
+              running_balance: importedStock,
+              uom: importedUnit,
+              reorder_level: importedThreshold,
+              item_unit_cost: 0,
+              last_unit_cost: 0,
+              item_type: importedCategory === 'finished_good' ? 2 : 1,
+              updated_at: serverTimestamp(),
+            }, { merge: true });
           } else if (type === 'recipes') {
             const menuItems = await getDocs(query(collection(db, 'menu'), where('name', '==', row.MenuItemName)));
             const inventoryItems = await getDocs(query(collection(db, 'inventory'), where('name', '==', row.IngredientName)));
@@ -4870,7 +6168,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
     if (type === 'menu') {
       data = [{ Name: 'Pizza', Price: 12.99, Description: 'Delicious pizza', Category: 'Main', Image: '' }];
     } else if (type === 'inventory') {
-      data = [{ Name: 'Flour', Stock: 100, Unit: 'kg', CostPerUnit: 1.5, LowStockThreshold: 10 }];
+      data = [{ Name: 'Flour', Stock: 100, Unit: 'kg', Category: 'raw_material', LowStockThreshold: 10 }];
     } else if (type === 'recipes') {
       data = [{ MenuItemName: 'Pizza', IngredientName: 'Flour', Quantity: 0.5, Unit: 'kg' }];
     }
@@ -4914,10 +6212,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 
   const handleEditInventory = (item: InventoryItem) => {
     setEditingInventoryId(item.id);
-    setEditInventoryForm({
-      ...item,
-      costPerUnit: (item.costPerUnit || 0) / 100 // Convert cents to dollars for input
-    });
+    setEditInventoryForm({ ...item });
   };
 
   const handleSaveInventory = async (id: string) => {
@@ -4925,21 +6220,31 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
       const itemRef = doc(db, 'inventory', id);
       const originalItem = inventory.find(i => i.id === id);
       const { id: _, ...dataToUpdate } = editInventoryForm;
-      const newCostCents = Math.round((dataToUpdate.costPerUnit || 0) * 100);
       
       const oldStock = originalItem?.stock || 0;
       const newStock = dataToUpdate.stock || 0;
       const variance = newStock - oldStock;
 
-      await updateDoc(itemRef, {
-        ...dataToUpdate,
-        costPerUnit: newCostCents,
-        averageCost: newCostCents
-      });
+      const { costPerUnit: _ignoredCostPerUnit, averageCost: _ignoredAverageCost, ...updatableData } = dataToUpdate;
+      await updateDoc(itemRef, updatableData);
+      await setDoc(doc(db, 'stock_item', id), {
+        id,
+        item_id: id,
+        stock_item_id: id,
+        item_name: updatableData.name || originalItem?.name || 'Unnamed Item',
+        qty: Number(updatableData.stock ?? newStock) || 0,
+        running_balance: Number(updatableData.stock ?? newStock) || 0,
+        uom: updatableData.unit || originalItem?.unit || 'pcs',
+        reorder_level: Number(updatableData.lowStockThreshold ?? originalItem?.lowStockThreshold ?? 0) || 0,
+        item_unit_cost: Number(originalItem?.averageCost || originalItem?.costPerUnit || 0) || 0,
+        last_unit_cost: Number(originalItem?.averageCost || originalItem?.costPerUnit || 0) || 0,
+        item_type: (updatableData.category || originalItem?.category || 'raw_material') === 'finished_good' ? 2 : 1,
+        updated_at: serverTimestamp(),
+      }, { merge: true });
 
       // Log difference as Stock Adjustment
       if (variance !== 0) {
-        const adjustmentCost = Math.abs(variance) * (originalItem?.averageCost || newCostCents || 0);
+        const adjustmentCost = Math.abs(variance) * (originalItem?.averageCost || originalItem?.costPerUnit || 0);
         const type = variance > 0 ? 'income' : 'expense'; // Gain vs Shrinkage
         const description = `Stock Assessment: ${variance > 0 ? 'Gain' : 'Shrinkage'} of ${Math.abs(variance)} ${originalItem?.unit} for ${originalItem?.name}`;
         
@@ -4951,10 +6256,11 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         });
 
         // Record stock movement
-        await addDoc(collection(db, 'stock_movements'), {
+        await recordStockMovement({
           inventoryItemId: id,
           itemName: originalItem?.name || 'Unknown',
           type: 'adjustment',
+          flowType: 'ADJUST',
           quantityChange: variance,
           stockAfter: newStock,
           reference: `Manual Adjustment: ${variance > 0 ? 'Found' : 'Lost'} stock`,
@@ -5271,10 +6577,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           orderId: settlingOrder.id,
+          customerId: settlingOrder.customerId || null,
           customerName: settlingOrder.customerName || 'Guest',
           paymentMethod,
           orderType: settlingOrder.orderType,
           store: settlingOrder.store || 'Main',
+          sourceType: 'order',
           cashAmount,
           cardAmount,
           lines: journalLines
@@ -5330,10 +6638,12 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           description: `Partial Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
           orderId: settlingOrder.id,
+          customerId: settlingOrder.customerId || null,
           customerName: settlingOrder.customerName || 'Guest',
           paymentMethod,
           orderType: settlingOrder.orderType,
           store: settlingOrder.store || 'Main',
+          sourceType: 'order',
           cashAmount,
           cardAmount,
           lines: journalLines
@@ -5380,11 +6690,13 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           description: `Sale: Order #${settlingOrder.id.slice(-6).toUpperCase()} — ${settlingOrder.customerName || 'Guest'} [${paymentMethod.toUpperCase()}]`,
           timestamp: serverTimestamp(),
           orderId: settlingOrder.id,
+          customerId: settlingOrder.customerId || null,
           customerName: settlingOrder.customerName || 'Guest',
           paymentMethod,
           orderType: settlingOrder.orderType,
           store: settlingOrder.store || 'Main',
           tableNumber: settlingOrder.tableNumber || null,
+          sourceType: 'order',
           cashAmount,
           cardAmount,
           changeGiven: change,
@@ -5513,10 +6825,26 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             if (invDoc) {
               const currentStock = invDoc.stock || 0;
               const deduction = ingredient.quantity * qty;
+              const nextStock = Math.max(0, currentStock - deduction);
               await updateDoc(doc(db, 'inventory', invDoc.id), {
-                stock: Math.max(0, currentStock - deduction),
+                stock: nextStock,
                 lastUpdated: serverTimestamp()
               });
+              await recordStockMovement(buildStockMovementDoc({
+                inventoryItem: invDoc,
+                quantityChange: -deduction,
+                stockAfter: nextStock,
+                movementType: 'SALE',
+                reference: `Order #${order.id.slice(-6).toUpperCase()} finalized`,
+                locationName: order.store || 'main',
+                secondaryName: order.customerName || 'Guest',
+                costPerUnit: invDoc.averageCost || invDoc.costPerUnit || 0,
+                orderId: order.id,
+                customerId: order.customerId || null,
+                documentType: 'order_sale',
+                documentId: order.id,
+                accountingReference: `ORD-${order.id.slice(-6).toUpperCase()}`,
+              }));
             } else {
               await deductRecursive(ingredient.inventoryItemId, '', ingredient.quantity * qty);
             }
@@ -5524,10 +6852,26 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         } else {
           const invItem = inventory.find(i => i.name.toLowerCase() === itemName?.toLowerCase());
           if (invItem) {
+            const nextStock = Math.max(0, invItem.stock - qty);
             await updateDoc(doc(db, 'inventory', invItem.id), {
-              stock: Math.max(0, invItem.stock - qty),
+              stock: nextStock,
               lastUpdated: serverTimestamp()
             });
+            await recordStockMovement(buildStockMovementDoc({
+              inventoryItem: invItem,
+              quantityChange: -qty,
+              stockAfter: nextStock,
+              movementType: 'SALE',
+              reference: `Order #${order.id.slice(-6).toUpperCase()} finalized`,
+              locationName: order.store || 'main',
+              secondaryName: order.customerName || 'Guest',
+              costPerUnit: invItem.averageCost || invItem.costPerUnit || 0,
+              orderId: order.id,
+              customerId: order.customerId || null,
+              documentType: 'order_sale',
+              documentId: order.id,
+              accountingReference: `ORD-${order.id.slice(-6).toUpperCase()}`,
+            }));
           }
         }
     };
@@ -5581,6 +6925,8 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
           reference: `ORD-${order.id.slice(-6).toUpperCase()}`,
           description: `Sale: Order #${order.id.slice(-6).toUpperCase()}`,
           timestamp: serverTimestamp(),
+          customerId: order.customerId || null,
+          sourceType: 'order',
           lines: [
             { accountId: order.paymentMethod === 'cash' ? 'cash' : 'bank', accountName: order.paymentMethod === 'cash' ? 'Cash' : 'Bank', debit: order.total, credit: 0 },
             { accountId: 'sales', accountName: 'Sales Revenue', debit: 0, credit: order.total }
@@ -5760,6 +7106,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
             { id: 'kitchen', name: 'Kitchen (KDS)', icon: <Monitor size={18} /> },
             { id: 'promotions', name: 'Promotions', icon: <Tag size={18} /> },
             { isSection: true, name: 'Stock Flow' },
+            { id: 'stock_ops', name: 'Stock Operations', icon: <Split size={18} /> },
             { id: 'stock_flow', name: 'Stock Movement', icon: <ArrowRightLeft size={18} /> },
             { id: 'inventory', name: 'Inventory', icon: <Boxes size={18} /> },
             { id: 'suppliers', name: 'Suppliers', icon: <Truck size={18} /> },
@@ -5831,6 +7178,7 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
                  activeTab === 'finance' ? 'Accounting' : 
                  activeTab === 'crm' ? 'Concierge' : 
                  activeTab === 'wastage' ? 'Wastage' : 
+                 activeTab === 'stock_ops' ? 'Stock Operations' : 
                  activeTab === 'production' ? 'Production' : 
                  activeTab === 'hr' ? 'HR & Payroll' : 
                  activeTab?.replace('-', ' ')}
@@ -5907,7 +7255,9 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
         </header>
 
         <main className="flex-1 overflow-y-auto p-4 md:p-8 bg-muted/30/10 custom-scrollbar">
-          {renderContent()}
+          <AdminModuleErrorBoundary resetKey={activeTab}>
+            {renderContent()}
+          </AdminModuleErrorBoundary>
         </main>
 
         {/* System Reset Confirmation Modal */}
@@ -6010,9 +7360,11 @@ export default function AdminPanel({ items, categories, onClose, onLogout, onOpe
 function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[], terminals: any[] }) {
   const [isAdding, setIsAdding] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [form, setForm] = useState({ name: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', storeId: '', terminalId: '', hourlyRate: 30, permissions: {} as any });
+  const [form, setForm] = useState({ name: '', username: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', storeId: '', terminalId: '', hourlyRate: 30, permissions: {} as any });
   const [error, setError] = useState('');
   const [editingPermissionsId, setEditingPermissionsId] = useState<string | null>(null);
+  const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ name: '', username: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', storeId: '', terminalId: '', hourlyRate: 30, active: true });
 
   const permissionGroups = [
     {
@@ -6043,6 +7395,7 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
       name: 'Inventory & Finance',
       modules: [
         { id: 'inventory', name: 'Inventory Control', icon: <Package size={14} /> },
+        { id: 'stock_ops', name: 'Stock Operations', icon: <Split size={14} /> },
         { id: 'stock_flow', name: 'Stock Movement Flow', icon: <ArrowRightLeft size={14} /> },
         { id: 'suppliers', name: 'Suppliers', icon: <Truck size={14} /> },
         { id: 'purchases', name: 'Purchases', icon: <Receipt size={14} /> },
@@ -6059,8 +7412,8 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
 
   const handleAdd = async () => {
     setError('');
-    if (!form.name || !form.email) {
-      setError('Name and email are required.');
+    if (!form.name || !form.email || !form.password) {
+      setError('Name, email, and password are required.');
       return;
     }
     const email = form.email;
@@ -6078,8 +7431,12 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
         existingUid = userDoc.id;
         // Update existing user profile
         await updateDoc(doc(db, 'users', existingUid), {
+          displayName: form.name,
+          username: form.username || null,
           role: form.role,
           permissions: form.permissions,
+          storeId: form.storeId || null,
+          terminalId: form.terminalId || null,
           vehicle: form.vehicle || null
         });
         console.log('Updated existing user profile in users collection');
@@ -6088,8 +7445,10 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
       // Create staff record
       await addDoc(collection(db, 'staff'), {
         name: form.name,
+        username: form.username || null,
         email: email,
         phone: form.phone,
+        password: form.password,
         role: form.role,
         vehicle: form.vehicle || null,
         storeId: form.storeId || null,
@@ -6101,7 +7460,7 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
       });
       console.log('Staff record created in Firestore');
 
-      setForm({ name: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', storeId: '', terminalId: '', permissions: {} });
+      setForm({ name: '', username: '', role: 'waiter', email: '', phone: '', password: '', vehicle: '', storeId: '', terminalId: '', permissions: {} });
       setIsAdding(false);
       alert('Staff member added successfully!');
     } catch (err: any) {
@@ -6116,13 +7475,17 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
       await updateDoc(doc(db, 'staff', id), { role });
       
       // Also update the user profile if it exists
-      const usersRef = collection(db, 'users');
-      const q = query(usersRef, where('email', '==', email));
-      const querySnapshot = await getDocs(q);
-      
-      if (!querySnapshot.empty) {
-        const userDoc = querySnapshot.docs[0];
-        await updateDoc(doc(db, 'users', userDoc.id), { role });
+      try {
+        const usersRef = collection(db, 'users');
+        const q = query(usersRef, where('email', '==', email), limit(1));
+        const querySnapshot = await getDocs(q);
+        
+        if (!querySnapshot.empty) {
+          const userDoc = querySnapshot.docs[0];
+          await updateDoc(doc(db, 'users', userDoc.id), { role });
+        }
+      } catch (usersErr) {
+        console.warn('Staff role updated, but users profile role sync failed:', usersErr);
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `staff/${id}`);
@@ -6140,10 +7503,120 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
       
       const member = staff.find(s => s.id === staffId);
       if (member && member.uid) {
-        await updateDoc(doc(db, 'users', member.uid), { permissions: newPermissions });
+        try {
+          await updateDoc(doc(db, 'users', member.uid), { permissions: newPermissions });
+        } catch (usersErr) {
+          console.warn('Staff permissions updated, but users profile permissions sync failed:', usersErr);
+        }
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `staff/${staffId}/permissions`);
+    }
+  };
+
+  const deleteStaffMember = async (member: any) => {
+    try {
+      const linkedUid = member.uid as string | undefined;
+      if (linkedUid) {
+        await deleteDoc(doc(db, 'users', linkedUid));
+      } else if (member.email) {
+        const userQ = query(collection(db, 'users'), where('email', '==', member.email), limit(1));
+        const userSnap = await getDocs(userQ);
+        if (!userSnap.empty) {
+          await deleteDoc(doc(db, 'users', userSnap.docs[0].id));
+        }
+      }
+
+      await deleteDoc(doc(db, 'staff', member.id));
+      alert('Staff member deleted successfully.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `staff/${member.id}`);
+    }
+  };
+
+  const openEditStaff = (member: any) => {
+    setEditingStaffId(member.id);
+    setEditForm({
+      name: member.name || '',
+      username: member.username || '',
+      role: member.role || 'waiter',
+      email: member.email || '',
+      phone: member.phone || '',
+      password: '',
+      vehicle: member.vehicle || '',
+      storeId: member.storeId || '',
+      terminalId: member.terminalId || '',
+      hourlyRate: Number(member.hourlyRate ?? 30),
+      active: member.active !== false,
+    });
+  };
+
+  const saveEditedStaff = async (member: any) => {
+    try {
+      const staffUpdate: any = {
+        name: editForm.name,
+        username: editForm.username || null,
+        role: editForm.role,
+        email: editForm.email,
+        phone: editForm.phone || null,
+        vehicle: editForm.vehicle || null,
+        storeId: editForm.storeId || null,
+        terminalId: editForm.terminalId || null,
+        hourlyRate: Number.isFinite(editForm.hourlyRate) ? editForm.hourlyRate : 30,
+        active: editForm.active,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (editForm.password.trim()) {
+        staffUpdate.password = editForm.password.trim();
+      }
+
+      await updateDoc(doc(db, 'staff', member.id), staffUpdate);
+
+      let syncWarning = '';
+      const linkedUid = member.uid as string | undefined;
+      if (linkedUid) {
+        try {
+          await updateDoc(doc(db, 'users', linkedUid), {
+            displayName: editForm.name,
+            username: editForm.username || null,
+            role: editForm.role,
+            email: editForm.email,
+            storeId: editForm.storeId || null,
+            terminalId: editForm.terminalId || null,
+            active: editForm.active,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (usersErr) {
+          console.warn('Staff updated, but linked users profile sync failed:', usersErr);
+          syncWarning = ' Staff profile saved, but linked users profile sync failed.';
+        }
+      } else if (editForm.email) {
+        try {
+          const userQ = query(collection(db, 'users'), where('email', '==', editForm.email), limit(1));
+          const userSnap = await getDocs(userQ);
+          if (!userSnap.empty) {
+            await updateDoc(doc(db, 'users', userSnap.docs[0].id), {
+              displayName: editForm.name,
+              username: editForm.username || null,
+              role: editForm.role,
+              email: editForm.email,
+              storeId: editForm.storeId || null,
+              terminalId: editForm.terminalId || null,
+              active: editForm.active,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (usersErr) {
+          console.warn('Staff updated, but email-based users profile sync failed:', usersErr);
+          syncWarning = ' Staff profile saved, but linked users profile sync failed.';
+        }
+      }
+
+      setEditingStaffId(null);
+      alert(`Staff details updated successfully.${syncWarning}`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `staff/${member.id}`);
     }
   };
 
@@ -6202,19 +7675,16 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
             <input type="email" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.email} onChange={e => setForm({...form, email: e.target.value})} />
           </div>
           <div className="space-y-1">
+            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Username</label>
+            <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.username} onChange={e => setForm({...form, username: e.target.value})} placeholder="Optional login username" />
+          </div>
+          <div className="space-y-1">
             <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Phone</label>
             <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} />
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Password</label>
             <input type="password" placeholder="For mobile app login" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.password} onChange={e => setForm({...form, password: e.target.value})} />
-          </div>
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Assigned Store</label>
-            <select className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none" value={form.storeId} onChange={e => setForm({...form, storeId: e.target.value})}>
-              <option value="">Any Store</option>
-              {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-muted-foreground uppercase ml-1">Assigned Store</label>
@@ -6240,8 +7710,7 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
               <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-foreground" value={form.vehicle} onChange={e => setForm({...form, vehicle: e.target.value})} placeholder="e.g. Bike, Car (Plate No)" />
             </div>
           )}
-            <div className="md:col-span-2 space-y-2">
-            <div className="md:col-span-2 space-y-4">
+          <div className="md:col-span-2 space-y-4">
               <div className="flex items-center justify-between px-1">
                 <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Access Permissions</label>
                 <label className="flex items-center gap-2 cursor-pointer group">
@@ -6296,8 +7765,7 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
                   </div>
                 ))}
               </div>
-            </div>
-            </div>
+          </div>
           <div className="md:col-span-2 flex gap-4 pt-4">
             <button onClick={handleAdd} className="flex-1 py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary/90 transition-all">Save Staff</button>
             <button onClick={() => setIsAdding(false)} className="flex-1 py-3 bg-background text-muted-foreground rounded-xl font-bold hover:bg-background/80 transition-all">Cancel</button>
@@ -6309,6 +7777,7 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
         {staff.filter(member => 
           member.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
           member.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          String(member.username || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
           member.role.toLowerCase().includes(searchTerm.toLowerCase())
         ).map(member => (
           <div key={member.id} className="p-6 bg-card border border-border rounded-[2.5rem] hover:shadow-xl hover:shadow-primary/5 transition-all group">
@@ -6339,6 +7808,20 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
                 title="Manage Permissions"
               >
                 <ShieldCheck size={20} />
+              </button>
+              <button
+                onClick={() => deleteStaffMember(member)}
+                className="p-2 text-muted-foreground hover:text-red-500 transition-colors"
+                title="Delete Staff"
+              >
+                <Trash2 size={20} />
+              </button>
+              <button
+                onClick={() => editingStaffId === member.id ? setEditingStaffId(null) : openEditStaff(member)}
+                className="p-2 text-muted-foreground hover:text-primary transition-colors"
+                title="View / Edit Staff"
+              >
+                <Edit2 size={20} />
               </button>
             </div>
             
@@ -6384,7 +7867,48 @@ function StaffSection({ staff, stores, terminals }: { staff: any[], stores: any[
             <div className="space-y-2 text-sm text-muted-foreground">
               <p className="flex items-center gap-2"><Phone size={14} /> {member.phone || 'No phone'}</p>
               <p className="flex items-center gap-2"><FileText size={14} /> {member.email}</p>
+              <p className="flex items-center gap-2"><User size={14} /> {member.username || 'No username'}</p>
             </div>
+
+            {editingStaffId === member.id && (
+              <div className="mt-4 p-4 bg-background/40 border border-border rounded-2xl space-y-3 animate-in fade-in">
+                <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Staff Details</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="Full Name" />
+                  <input type="text" value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="Username" />
+                  <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="Email" />
+                  <input type="text" value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="Phone" />
+                  <select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs">
+                    <option value="admin">Admin</option>
+                    <option value="manager">Manager</option>
+                    <option value="waiter">Waiter</option>
+                    <option value="chef">Chef</option>
+                    <option value="driver">Driver</option>
+                  </select>
+                  <input type="number" value={editForm.hourlyRate} onChange={(e) => setEditForm({ ...editForm, hourlyRate: parseFloat(e.target.value) || 0 })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="Hourly Rate" />
+                  <select value={editForm.storeId} onChange={(e) => setEditForm({ ...editForm, storeId: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs">
+                    <option value="">Any Store</option>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <select value={editForm.terminalId} onChange={(e) => setEditForm({ ...editForm, terminalId: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs">
+                    <option value="">Any Terminal</option>
+                    {terminals.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                  <input type="text" value={editForm.vehicle} onChange={(e) => setEditForm({ ...editForm, vehicle: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="Vehicle" />
+                  <input type="password" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} className="w-full p-2.5 bg-card border border-border rounded-xl text-xs" placeholder="New Password (leave blank to keep)" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground">
+                    <input type="checkbox" checked={editForm.active} onChange={(e) => setEditForm({ ...editForm, active: e.target.checked })} className="w-4 h-4 accent-primary" />
+                    Active
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setEditingStaffId(null)} className="px-3 py-2 rounded-xl text-xs font-bold bg-card border border-border text-muted-foreground">Cancel</button>
+                    <button onClick={() => saveEditedStaff(member)} className="px-3 py-2 rounded-xl text-xs font-bold bg-primary text-white">Save Changes</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -6447,6 +7971,9 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
     if (!form.menuItemId || form.quantity <= 0) return;
     setLoading(true);
     try {
+      let usedStockFlowId = 0;
+      let producedStockFlowId = 0;
+
       // Check for sufficient stock
       for (const ingredient of form.ingredients) {
         const inv = inventory.find(i => i.id === ingredient.inventoryItemId);
@@ -6459,7 +7986,11 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
       }
 
       const menuItem = items.find(i => i.id === form.menuItemId);
-      if (!menuItem) throw new Error("Menu item not found");
+      if (!menuItem) {
+        handleFirestoreError(new Error('Menu item not found'), OperationType.GET, `menu/${form.menuItemId}`);
+        setLoading(false);
+        return;
+      }
 
       // Calculate actual cost from raw materials + labor + overhead
       let rawMaterialCost = 0;
@@ -6516,15 +8047,24 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
             lastUpdated: serverTimestamp()
           });
           
-          await addDoc(collection(db, 'stock_movements'), {
-            inventoryItemId: invDoc.id,
-            itemName: invDoc.data().name,
-            type: 'production_out',
-            quantityChange: -deduction,
-            stockAfter: newStock,
-            reference: `Production of ${menuItem.name}`,
-            timestamp: serverTimestamp()
+          const usedFlow = await recordStockMovement({
+            ...buildStockMovementDoc({
+              inventoryItem: { id: invDoc.id, name: invDoc.data().name, stock: currentStock, unit: invDoc.data().unit, averageCost: invDoc.data().averageCost, costPerUnit: invDoc.data().costPerUnit, lowStockThreshold: invDoc.data().lowStockThreshold || 0, lastUpdated: serverTimestamp(), category: invDoc.data().category },
+              quantityChange: -deduction,
+              stockAfter: newStock,
+              movementType: 'SALE',
+              reference: `Production of ${menuItem.name}`,
+              locationName: 'main',
+              secondaryName: menuItem.name,
+              costPerUnit: invDoc.data().averageCost || invDoc.data().costPerUnit || 0,
+              documentType: 'production_consumption',
+              documentId: menuItem.id || null,
+              accountingReference: `PROD-${menuItem.id || invDoc.id}`,
+            }),
           });
+          if (!usedStockFlowId && usedFlow?.stockFlowId) {
+            usedStockFlowId = usedFlow.stockFlowId;
+          }
         }
       }
 
@@ -6535,21 +8075,43 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
         lastUpdated: serverTimestamp()
       } as any);
 
-      await addDoc(collection(db, 'stock_movements'), {
-        inventoryItemId: finishedGood.id,
-        itemName: finishedGood.name,
-        type: 'production_in',
-        quantityChange: form.quantity,
-        stockAfter: newFinishedStock,
-        reference: `Produced ${form.quantity} ${menuItem.name}`,
-        timestamp: serverTimestamp()
+      const producedFlow = await recordStockMovement({
+        ...buildStockMovementDoc({
+          inventoryItem: finishedGood,
+          quantityChange: form.quantity,
+          stockAfter: newFinishedStock,
+          movementType: 'TRANSFER',
+          reference: `Produced ${form.quantity} ${menuItem.name}`,
+          locationName: 'main',
+          secondaryName: menuItem.name,
+          costPerUnit: costPerUnit || 0,
+          transfer: true,
+          documentType: 'production_output',
+          documentId: menuItem.id || null,
+          accountingReference: `PROD-${menuItem.id || finishedGood.id}`,
+        }),
       });
+      if (producedFlow?.stockFlowId) {
+        producedStockFlowId = producedFlow.stockFlowId;
+      }
 
       // Record production
-      await addDoc(collection(db, 'production'), {
+      const productionRef = await addDoc(collection(db, 'production'), {
+        id: makeSqlLikeId(),
         menuItemId: menuItem.id || '',
         menuItemName: menuItem.name || '',
         quantity: form.quantity || 0,
+        bundle_id: toSqlBigInt(menuItem.id || 0, 0),
+        by_user_id: 0,
+        creation_date: Date.now(),
+        date: Date.now(),
+        destination_id: toSqlBigInt(finishedGood.id || 0, 0),
+        destination_type: 2,
+        memo: `Production run for ${menuItem.name}`,
+        produced_stock_flow_id: producedStockFlowId,
+        source_id: toSqlBigInt(menuItem.id || 0, 0),
+        source_type: 1,
+        used_stock_flow_id: usedStockFlowId,
         timestamp: serverTimestamp(),
         ingredients: form.ingredients.map(ing => ({
           inventoryItemId: ing.inventoryItemId || '',
@@ -6565,10 +8127,14 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
       });
 
       // Accounting Entry
-      await addDoc(collection(db, 'journal_entries'), {
+      const productionJournalEntryRef = await addDoc(collection(db, 'journal_entries'), {
         date: new Date().toISOString().split('T')[0],
         reference: 'PROD',
         description: `Production: ${form.quantity}x ${menuItem.name}`,
+        productionId: productionRef.id,
+        menuItemId: menuItem.id || '',
+        documentType: 'production',
+        documentId: productionRef.id,
         timestamp: serverTimestamp(),
         lines: [
           { accountId: 'inventory_fg', accountName: 'Inventory (Finished Goods)', debit: Math.round(actualTotalCost), credit: 0 },
@@ -6577,6 +8143,8 @@ function ProductionSection({ inventory, items }: { inventory: InventoryItem[], i
           ...(totalOverheadCost > 0 ? [{ accountId: 'overhead_expense', accountName: 'Overhead Expense', debit: 0, credit: totalOverheadCost }] : [])
         ]
       });
+      void productionRef;
+      void productionJournalEntryRef;
 
       setForm({ menuItemId: '', quantity: 1, laborCost: 0, overheadCost: 0, ingredients: [] });
       setIsAdding(false);
@@ -6812,18 +8380,24 @@ function WastageSection({ wastage, inventory }: { wastage: any[], inventory: Inv
         });
 
         // Record stock movement
-        await addDoc(collection(db, 'stock_movements'), {
-          inventoryItemId: item.id,
-          itemName: item.name,
-          type: 'wastage',
-          quantityChange: -form.quantity,
-          stockAfter: newStock,
-          reference: `Wastage: ${form.reason}`,
-          timestamp: serverTimestamp()
+        await recordStockMovement({
+          ...buildStockMovementDoc({
+            inventoryItem: item,
+            quantityChange: -form.quantity,
+            stockAfter: newStock,
+            movementType: 'WASTE',
+            reference: `Wastage: ${form.reason}`,
+            locationName: 'main',
+            secondaryName: form.reason,
+            costPerUnit: item.averageCost || item.costPerUnit || 0,
+            documentType: 'wastage',
+            documentId: item.id,
+            accountingReference: `WASTAGE-${item.id}`,
+          }),
         });
 
         // Add to journal as expense
-        await addDoc(collection(db, 'journal'), {
+        const wastageJournalRef = await addDoc(collection(db, 'journal'), {
           type: 'wastage',
           amount: (item.averageCost || item.costPerUnit || 0) * form.quantity,
           description: `Wastage: ${item.name} (${form.reason})`,
@@ -6836,16 +8410,21 @@ function WastageSection({ wastage, inventory }: { wastage: any[], inventory: Inv
         });
 
         // Also create a formal journal entry
-        await addDoc(collection(db, 'journal_entries'), {
+        const wastageJournalEntryRef = await addDoc(collection(db, 'journal_entries'), {
           date: new Date().toISOString().split('T')[0],
           reference: 'WASTAGE',
           description: `Wastage: ${item.name} (${form.reason})`,
+          inventoryItemId: item.id,
+          documentType: 'wastage',
+          documentId: item.id,
           timestamp: serverTimestamp(),
           lines: [
             { accountId: '5104', accountName: 'Wastage Expense', debit: (item.averageCost || item.costPerUnit || 0) * form.quantity, credit: 0 },
             { accountId: '1105', accountName: 'Inventory Asset', debit: 0, credit: (item.averageCost || item.costPerUnit || 0) * form.quantity }
           ]
         });
+        void wastageJournalRef;
+        void wastageJournalEntryRef;
       }
 
       setForm({ itemId: '', quantity: 0, reason: '' });
@@ -6937,6 +8516,398 @@ function WastageSection({ wastage, inventory }: { wastage: any[], inventory: Inv
       </div>
     </div>
   );
+}
+
+function StockOperationsSection({ inventory, vendors }: { inventory: InventoryItem[], vendors: any[] }) {
+  const [activeSubTab, setActiveSubTab] = useState<'transfer' | 'count' | 'returns' | 'history'>('transfer');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [history, setHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
+  const [transferForm, setTransferForm] = useState({
+    itemId: '',
+    quantity: 0,
+    fromLocation: 'main',
+    toLocation: 'warehouse',
+    note: ''
+  });
+
+  const [countForm, setCountForm] = useState({
+    itemId: '',
+    countedQty: 0,
+    reason: '',
+    autoApprove: true
+  });
+
+  const [returnForm, setReturnForm] = useState({
+    itemId: '',
+    quantity: 0,
+    returnType: 'supplier' as 'supplier' | 'customer',
+    reference: '',
+    reason: ''
+  });
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(query(collection(db, 'stock_movements'), limit(100)), (snapshot) => {
+      const rows = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+      rows.sort((left, right) => getRowTime(right) - getRowTime(left));
+      setHistory(rows);
+      setHistoryLoading(false);
+    }, (err) => {
+      setHistoryLoading(false);
+      handleFirestoreError(err, OperationType.LIST, 'stock_movements');
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!statusMessage) return;
+    const timer = window.setTimeout(() => setStatusMessage(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [statusMessage]);
+
+  const filteredInventory = useMemo(() => {
+    const term = searchTerm.toLowerCase();
+    return inventory.filter((item) => item.name.toLowerCase().includes(term));
+  }, [inventory, searchTerm]);
+
+  const filteredHistory = useMemo(() => {
+    const term = searchTerm.toLowerCase();
+    return history.filter((row) => {
+      const haystack = [row.itemName, row.reference, row.info, row.type, row.flowType, row.locationName, row.secondaryName]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(term);
+    });
+  }, [history, searchTerm]);
+
+  const postMovement = async (payload: {
+    inventoryItem: InventoryItem;
+    quantityChange: number;
+    stockAfter: number;
+    movementType: 'PURCHASE' | 'ADJUST' | 'TRANSFER' | 'SALE' | 'WASTE';
+    reference: string;
+    locationName?: string;
+    secondaryName?: string;
+    transfer?: boolean;
+  }) => {
+    await recordStockMovement(buildStockMovementDoc({
+      inventoryItem: payload.inventoryItem,
+      quantityChange: payload.quantityChange,
+      stockAfter: payload.stockAfter,
+      movementType: payload.movementType,
+      reference: payload.reference,
+      locationName: payload.locationName || 'main',
+      secondaryName: payload.secondaryName || payload.reference,
+      costPerUnit: payload.inventoryItem.averageCost || payload.inventoryItem.costPerUnit || 0,
+      transfer: payload.transfer || false,
+    }));
+  };
+
+  const handleTransfer = async () => {
+    const item = inventory.find((candidate) => candidate.id === transferForm.itemId);
+    if (!item || transferForm.quantity <= 0) return;
+
+    try {
+      await postMovement({
+        inventoryItem: item,
+        quantityChange: 0,
+        stockAfter: toSafeNumber(item.stock),
+        movementType: 'TRANSFER',
+        reference: `Transfer ${transferForm.fromLocation} -> ${transferForm.toLocation}${transferForm.note ? ` | ${transferForm.note}` : ''}`,
+        locationName: transferForm.fromLocation,
+        secondaryName: transferForm.toLocation,
+        transfer: true
+      });
+
+      setTransferForm({ itemId: '', quantity: 0, fromLocation: 'main', toLocation: 'warehouse', note: '' });
+      setStatusMessage(`Transfer recorded for ${item.name}.`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'stock_movements');
+    }
+  };
+
+  const handleStockTake = async () => {
+    const item = inventory.find((candidate) => candidate.id === countForm.itemId);
+    if (!item) return;
+
+    const countedQty = Math.max(0, Number(countForm.countedQty || 0));
+    const currentQty = toSafeNumber(item.stock);
+    const variance = countedQty - currentQty;
+    if (variance === 0) {
+      setStatusMessage('No variance detected.');
+      return;
+    }
+
+    if (!countForm.autoApprove && !window.confirm(`Apply stock variance of ${variance > 0 ? '+' : ''}${variance.toFixed(4)} for ${item.name}?`)) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'inventory', item.id), {
+        stock: countedQty,
+        lastUpdated: serverTimestamp()
+      });
+
+      await postMovement({
+        inventoryItem: item,
+        quantityChange: variance,
+        stockAfter: countedQty,
+        movementType: 'ADJUST',
+        reference: `Stock take: ${countForm.reason || 'manual count'}`,
+        locationName: 'main',
+        secondaryName: 'Stock Count'
+      });
+
+      const movementValue = Math.round(Math.abs(variance) * (item.averageCost || item.costPerUnit || 0));
+      await addDoc(collection(db, 'journal_entries'), {
+        date: new Date().toISOString().split('T')[0],
+        reference: 'STOCK-TAKE',
+        description: `Stock Take: ${item.name}`,
+        timestamp: serverTimestamp(),
+        lines: variance > 0 ? [
+          { accountId: '1105', accountName: 'Inventory Asset', debit: movementValue, credit: 0 },
+          { accountId: '5104', accountName: 'Stock Count Gain', debit: 0, credit: movementValue }
+        ] : [
+          { accountId: '5104', accountName: 'Stock Shrinkage', debit: movementValue, credit: 0 },
+          { accountId: '1105', accountName: 'Inventory Asset', debit: 0, credit: movementValue }
+        ]
+      });
+
+      setCountForm({ itemId: '', countedQty: 0, reason: '', autoApprove: true });
+      setStatusMessage(`Stock count posted for ${item.name}.`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `inventory/${item.id}`);
+    }
+  };
+
+  const handleReturn = async () => {
+    const item = inventory.find((candidate) => candidate.id === returnForm.itemId);
+    if (!item || returnForm.quantity <= 0) return;
+
+    try {
+      const currentQty = toSafeNumber(item.stock);
+      const delta = returnForm.returnType === 'customer' ? returnForm.quantity : -returnForm.quantity;
+      const nextQty = Math.max(0, currentQty + delta);
+
+      await updateDoc(doc(db, 'inventory', item.id), {
+        stock: nextQty,
+        lastUpdated: serverTimestamp()
+      });
+
+      await postMovement({
+        inventoryItem: item,
+        quantityChange: delta,
+        stockAfter: nextQty,
+        movementType: 'ADJUST',
+        reference: `${returnForm.returnType === 'customer' ? 'Customer' : 'Supplier'} return${returnForm.reference ? `: ${returnForm.reference}` : ''}${returnForm.reason ? ` | ${returnForm.reason}` : ''}`,
+        locationName: 'main',
+        secondaryName: `${returnForm.returnType} return`
+      });
+
+      const movementValue = Math.round(returnForm.quantity * (item.averageCost || item.costPerUnit || 0));
+      await addDoc(collection(db, 'journal_entries'), {
+        date: new Date().toISOString().split('T')[0],
+        reference: returnForm.returnType === 'customer' ? 'CUSTOMER-RETURN' : 'SUPPLIER-RETURN',
+        description: `${returnForm.returnType === 'customer' ? 'Customer' : 'Supplier'} return: ${item.name}`,
+        timestamp: serverTimestamp(),
+        lines: returnForm.returnType === 'customer' ? [
+          { accountId: '1105', accountName: 'Inventory Asset', debit: movementValue, credit: 0 },
+          { accountId: '4101', accountName: 'Sales Returns', debit: 0, credit: movementValue }
+        ] : [
+          { accountId: '2101', accountName: 'Accounts Payable', debit: movementValue, credit: 0 },
+          { accountId: '1105', accountName: 'Inventory Asset', debit: 0, credit: movementValue }
+        ]
+      });
+
+      setReturnForm({ itemId: '', quantity: 0, returnType: 'supplier', reference: '', reason: '' });
+      setStatusMessage(`${returnForm.returnType === 'customer' ? 'Customer' : 'Supplier'} return posted for ${item.name}.`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `inventory/${item.id}`);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-card p-6 rounded-[2.5rem] border border-border shadow-sm">
+        <div>
+          <h2 className="text-2xl font-black text-foreground uppercase tracking-tight flex items-center gap-2">
+            <Split size={24} className="text-primary" /> Stock Operations
+          </h2>
+          <p className="text-sm text-muted-foreground font-medium">Manage transfers, stock takes, and returns with visible audit history</p>
+        </div>
+
+        <div className="flex items-center gap-2 bg-background p-1 rounded-2xl border border-border overflow-x-auto max-w-full">
+          {[
+            { id: 'transfer', label: 'Transfer' },
+            { id: 'count', label: 'Stock Take' },
+            { id: 'returns', label: 'Returns' },
+            { id: 'history', label: 'History' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveSubTab(tab.id as any)}
+              className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${activeSubTab === tab.id ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {statusMessage && (
+        <div className="px-4 py-3 rounded-2xl bg-emerald-50 text-emerald-700 border border-emerald-100 text-sm font-bold">
+          {statusMessage}
+        </div>
+      )}
+
+      {activeSubTab !== 'history' && (
+        <div className="relative w-full max-w-lg">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
+          <input
+            type="text"
+            placeholder="Search stock item..."
+            className="w-full pl-10 pr-4 py-3 bg-background border border-border rounded-2xl text-sm focus:ring-2 focus:ring-primary outline-none"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+      )}
+
+      {activeSubTab === 'transfer' && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 bg-card border border-border rounded-[2.5rem] p-6 space-y-4">
+            <h3 className="text-lg font-black text-foreground uppercase tracking-tight">Inventory Transfer</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <select className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" value={transferForm.itemId} onChange={(e) => setTransferForm({ ...transferForm, itemId: e.target.value })}>
+                <option value="">Select item</option>
+                {filteredInventory.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              <input type="number" className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="Quantity" value={transferForm.quantity || ''} onChange={(e) => setTransferForm({ ...transferForm, quantity: Number(e.target.value) })} />
+              <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="From location" value={transferForm.fromLocation} onChange={(e) => setTransferForm({ ...transferForm, fromLocation: e.target.value })} />
+              <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="To location" value={transferForm.toLocation} onChange={(e) => setTransferForm({ ...transferForm, toLocation: e.target.value })} />
+              <textarea className="md:col-span-2 w-full p-3 bg-background border border-border rounded-xl text-sm font-bold min-h-24" placeholder="Note / reason" value={transferForm.note} onChange={(e) => setTransferForm({ ...transferForm, note: e.target.value })} />
+            </div>
+            <button onClick={handleTransfer} className="px-5 py-3 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-[10px]">Post Transfer</button>
+          </div>
+          <div className="bg-card border border-border rounded-[2.5rem] p-6 space-y-3">
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Operational note</p>
+            <p className="text-sm text-muted-foreground font-medium leading-6">Transfers log the movement event now, so the ledger stays clean even before multi-location quantities are modeled.</p>
+          </div>
+        </div>
+      )}
+
+      {activeSubTab === 'count' && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 bg-card border border-border rounded-[2.5rem] p-6 space-y-4">
+            <h3 className="text-lg font-black text-foreground uppercase tracking-tight">Stock Take / Count</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <select className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" value={countForm.itemId} onChange={(e) => setCountForm({ ...countForm, itemId: e.target.value })}>
+                <option value="">Select item</option>
+                {filteredInventory.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              <input type="number" className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="Counted quantity" value={countForm.countedQty || ''} onChange={(e) => setCountForm({ ...countForm, countedQty: Number(e.target.value) })} />
+              <input type="text" className="md:col-span-2 w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="Reason / count reference" value={countForm.reason} onChange={(e) => setCountForm({ ...countForm, reason: e.target.value })} />
+              <label className="md:col-span-2 flex items-center gap-3 p-3 rounded-xl border border-border bg-background">
+                <input type="checkbox" checked={countForm.autoApprove} onChange={(e) => setCountForm({ ...countForm, autoApprove: e.target.checked })} />
+                <span className="text-sm font-bold text-foreground">Auto-approve variance when posted</span>
+              </label>
+            </div>
+            <button onClick={handleStockTake} className="px-5 py-3 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-[10px]">Post Count Adjustment</button>
+          </div>
+          <div className="bg-card border border-border rounded-[2.5rem] p-6 space-y-3">
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Why it matters</p>
+            <p className="text-sm text-muted-foreground font-medium leading-6">A stock take is the clean correction point for drift between the shelf and the ledger.</p>
+          </div>
+        </div>
+      )}
+
+      {activeSubTab === 'returns' && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 bg-card border border-border rounded-[2.5rem] p-6 space-y-4">
+            <h3 className="text-lg font-black text-foreground uppercase tracking-tight">Supplier / Customer Returns</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <select className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" value={returnForm.returnType} onChange={(e) => setReturnForm({ ...returnForm, returnType: e.target.value as 'supplier' | 'customer' })}>
+                <option value="supplier">Supplier Return</option>
+                <option value="customer">Customer Return</option>
+              </select>
+              <select className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" value={returnForm.itemId} onChange={(e) => setReturnForm({ ...returnForm, itemId: e.target.value })}>
+                <option value="">Select item</option>
+                {filteredInventory.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              <input type="number" className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="Quantity" value={returnForm.quantity || ''} onChange={(e) => setReturnForm({ ...returnForm, quantity: Number(e.target.value) })} />
+              <input type="text" className="w-full p-3 bg-background border border-border rounded-xl text-sm font-bold" placeholder="Reference / invoice / order no" value={returnForm.reference} onChange={(e) => setReturnForm({ ...returnForm, reference: e.target.value })} />
+              <textarea className="md:col-span-2 w-full p-3 bg-background border border-border rounded-xl text-sm font-bold min-h-24" placeholder="Return reason" value={returnForm.reason} onChange={(e) => setReturnForm({ ...returnForm, reason: e.target.value })} />
+            </div>
+            <button onClick={handleReturn} className="px-5 py-3 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-[10px]">Post Return</button>
+          </div>
+          <div className="bg-card border border-border rounded-[2.5rem] p-6 space-y-3">
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Return handling</p>
+            <p className="text-sm text-muted-foreground font-medium leading-6">Supplier returns remove stock; customer returns add it back with a matching accounting entry.</p>
+          </div>
+        </div>
+      )}
+
+      {activeSubTab === 'history' && (
+        <div className="bg-card border border-border rounded-[2.5rem] overflow-hidden shadow-sm">
+          <div className="p-6 border-b border-border/70 flex items-center justify-between bg-background/50">
+            <div>
+              <h3 className="text-lg font-black text-foreground uppercase tracking-tight">Recent Stock Movements</h3>
+              <p className="text-sm text-muted-foreground font-medium">Posted operations show up here immediately.</p>
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{historyLoading ? 'Loading...' : `${filteredHistory.length} rows`}</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-muted/50 text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+                  <th className="px-6 py-4">Date</th>
+                  <th className="px-6 py-4">Item</th>
+                  <th className="px-6 py-4">Action</th>
+                  <th className="px-6 py-4">Reference</th>
+                  <th className="px-6 py-4 text-right">Qty</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filteredHistory.map((row) => (
+                  <tr key={row.id} className="hover:bg-background/50 transition-all">
+                    <td className="px-6 py-4 text-sm text-muted-foreground">{formatMovementDate(row)}</td>
+                    <td className="px-6 py-4 text-sm font-bold text-foreground">{row.itemName || row.primary_name || row.source_name || 'Unnamed'}</td>
+                    <td className="px-6 py-4 text-xs font-black uppercase text-muted-foreground">{String(row.flowType || row.type || 'movement').replace(/_/g, ' ')}</td>
+                    <td className="px-6 py-4 text-sm text-muted-foreground">{row.reference || row.info || 'N/A'}</td>
+                    <td className={`px-6 py-4 text-sm font-black text-right ${toSafeNumber(row.quantityChange || row.qty || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {toSafeNumber(row.quantityChange || row.qty || 0) >= 0 ? '+' : ''}{toSafeNumber(row.quantityChange || row.qty || 0).toFixed(4)}
+                    </td>
+                  </tr>
+                ))}
+                {!historyLoading && filteredHistory.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground italic text-sm">No recent movement records found.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getRowTime(row: any) {
+  if (row?.date?.toDate) return row.date.toDate().getTime();
+  if (row?.timestamp?.toDate) return row.timestamp.toDate().getTime();
+  if (typeof row?.date === 'number') return row.date;
+  return 0;
+}
+
+function formatMovementDate(row: any) {
+  if (row?.date?.toDate) return row.date.toDate().toLocaleString();
+  if (row?.timestamp?.toDate) return row.timestamp.toDate().toLocaleString();
+  return 'Processing...';
 }
 
 interface ManagementField {
@@ -7172,10 +9143,79 @@ function ManagementSection({ title, data, collectionName, icon, fields = [] }: {
   );
 }
 
-function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[] }) {
+function SuppliersSection({ suppliers, bills, journal, journalEntries }: { suppliers: any[], bills: any[], journal: any[], journalEntries: any[] }) {
   const [isAddingSupplier, setIsAddingSupplier] = useState(false);
-  const [supplierForm, setSupplierForm] = useState({ name: '', phone: '', email: '', address: '' });
+  const [supplierForm, setSupplierForm] = useState({ name: '', phone: '', email: '', address: '', subsidiaryId: '' });
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
+  const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+  const [subsidiaries, setSubsidiaries] = useState<any[]>([]);
+  const sharedSupplierSubsidiaryName = 'Suppliers Subsidiary';
+  const sharedSupplierSubsidiaryId = 'shared-suppliers';
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'purchase_orders'), (snapshot) => {
+      setPurchaseOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'purchase_orders'));
+
+    const unsubSubsidiaries = onSnapshot(query(collection(db, 'subsidiaries'), orderBy('name')), (snapshot) => {
+      setSubsidiaries(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'subsidiaries'));
+
+    return () => {
+      unsubscribe();
+      unsubSubsidiaries();
+    };
+  }, []);
+
+  const ensureSupplierSubsidiaryAndLedger = async (vendorId: string, vendorName: string, existingSubsidiaryId?: string) => {
+    const existingShared = subsidiaries.find(sub => sub.id === sharedSupplierSubsidiaryId || (sub.name === sharedSupplierSubsidiaryName && sub.type === 'supplier'));
+    const subsidiaryId = existingShared?.id || sharedSupplierSubsidiaryId;
+
+    await setDoc(doc(db, 'subsidiaries', subsidiaryId), {
+      name: sharedSupplierSubsidiaryName,
+      type: 'supplier',
+      parentAccountCode: '2101',
+      parentAccountName: 'Accounts Payable',
+      sourceCollection: 'vendors',
+      sourceId: 'shared-suppliers',
+      isSharedBucket: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    const accountCode = `2101-${vendorId.slice(0, 4).toUpperCase()}`;
+    await setDoc(doc(db, 'ledgerGroups', accountCode), {
+      code: accountCode,
+      name: `AP - ${vendorName}`,
+      type: 'Liability',
+      isAccount: true,
+      parentGroupId: '2101',
+      sourceCollection: 'vendors',
+      sourceId: vendorId,
+      description: `Accounts Payable for ${vendorName}`,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await updateDoc(doc(db, 'vendors', vendorId), {
+      subsidiaryId,
+      ledgerAccountCode: accountCode,
+      updatedAt: serverTimestamp(),
+    });
+
+    return { subsidiaryId, accountCode };
+  };
+
+  const linkSupplierToSubsidiary = async (vendorId: string, vendorName: string, chosenSubsidiaryId?: string) => {
+    const shared = await ensureSupplierSubsidiaryAndLedger(vendorId, vendorName, chosenSubsidiaryId);
+    await updateDoc(doc(db, 'vendors', vendorId), {
+      subsidiaryId: shared.subsidiaryId,
+      updatedAt: serverTimestamp(),
+    });
+
+    return shared.subsidiaryId;
+  };
 
   const handleAddSupplier = async () => {
     if (!supplierForm.name) return;
@@ -7184,19 +9224,12 @@ function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[]
         ...supplierForm,
         createdAt: serverTimestamp()
       });
-      
-      // Auto-create Accounts Payable ledger mapping
-      await addDoc(collection(db, 'ledger_groups'), {
-        code: `2101-${vendorDoc.id.slice(0,4).toUpperCase()}`,
-        name: `AP - ${supplierForm.name}`,
-        type: 'Liability',
-        parentCode: '2101',
-        isAccount: true,
-        description: `Accounts Payable for ${supplierForm.name}`
-      });
+
+      await linkSupplierToSubsidiary(vendorDoc.id, supplierForm.name, String(supplierForm.subsidiaryId || '') || undefined);
+      await ensureSupplierSubsidiaryAndLedger(vendorDoc.id, supplierForm.name, String(supplierForm.subsidiaryId || '') || undefined);
       
       setIsAddingSupplier(false);
-      setSupplierForm({ name: '', phone: '', email: '', address: '' });
+      setSupplierForm({ name: '', phone: '', email: '', address: '', subsidiaryId: '' });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'vendors');
     }
@@ -7207,6 +9240,45 @@ function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[]
     s.phone?.toLowerCase().includes(searchQuery.toLowerCase()) ||
     s.email?.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const selectedSupplier = selectedSupplierId ? suppliers.find(s => s.id === selectedSupplierId) : null;
+  const supplierSubsidiaryId = selectedSupplier?.subsidiaryId || '';
+  const supplierBills = selectedSupplier
+    ? bills.filter((bill) => getBillSupplierRef(bill) === selectedSupplier.id || bill.vendorId === selectedSupplier.id || bill.supplierId === selectedSupplier.id)
+    : [];
+  const supplierPOs = selectedSupplier
+    ? purchaseOrders.filter((po) => (po.supplierId || po.vendorId) === selectedSupplier.id)
+    : [];
+  const supplierJournalEntries = selectedSupplier
+    ? journalEntries.filter((entry) => {
+        const supplierName = String(selectedSupplier.name || '').toLowerCase();
+        const supplierLedgerCode = String(selectedSupplier.ledgerAccountCode || `2101-${String(selectedSupplier.id || '').slice(0, 4).toUpperCase()}`).toLowerCase();
+        const lines = Array.isArray(entry.lines) ? entry.lines : [];
+        const lineMatches = lines.some((line: any) =>
+          String(line.accountId || '').toLowerCase() === supplierLedgerCode ||
+          String(line.accountName || '').toLowerCase().includes('accounts payable') ||
+          String(line.accountName || '').toLowerCase().includes(supplierName)
+        );
+        const desc = String(entry.description || '').toLowerCase();
+        return entry.vendorId === selectedSupplier.id ||
+          entry.supplierId === selectedSupplier.id ||
+          entry.vendorId === selectedSupplier.id ||
+          lineMatches ||
+          desc.includes(supplierName);
+      })
+    : [];
+  const supplierJournal = selectedSupplier
+    ? journal.filter((entry) => {
+        const desc = String(entry.description || '').toLowerCase();
+        const supplierName = String(selectedSupplier.name || '').toLowerCase();
+        const supplierLedgerCode = String(selectedSupplier.ledgerAccountCode || `2101-${String(selectedSupplier.id || '').slice(0, 4).toUpperCase()}`).toLowerCase();
+        return entry.vendorId === selectedSupplier.id ||
+          entry.supplierId === selectedSupplier.id ||
+          entry.subsidiaryId === supplierSubsidiaryId && String(entry.sourceType || '').toLowerCase() === 'supplier' ||
+          String(entry.accountId || '').toLowerCase() === supplierLedgerCode ||
+          desc.includes(supplierName);
+      })
+    : [];
 
   return (
     <div className="space-y-8">
@@ -7279,6 +9351,21 @@ function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[]
                 onChange={e => setSupplierForm({ ...supplierForm, address: e.target.value })}
               />
             </div>
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Shared Supplier Subsidiary</label>
+              <select
+                className="w-full p-4 rounded-2xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none transition-all font-bold"
+                value={supplierForm.subsidiaryId}
+                onChange={e => setSupplierForm({ ...supplierForm, subsidiaryId: e.target.value })}
+              >
+                <option value="">Use shared suppliers bucket</option>
+                {subsidiaries.map(sub => (
+                  <option key={sub.id} value={sub.id}>
+                    {sub.name} {sub.type ? `(${sub.type})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="flex justify-end gap-4 mt-8">
             <button
@@ -7299,10 +9386,11 @@ function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[]
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredSuppliers.map(supplier => {
-          const supplierBills = bills.filter(b => b.supplierId === supplier.id);
-          const totalPurchased = supplierBills.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
-          const totalPaid = supplierBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
-          const balance = totalPurchased - totalPaid;
+          const supplierBills = bills.filter(b => getBillSupplierRef(b) === supplier.id || b.vendorId === supplier.id || b.supplierId === supplier.id);
+          const totalPurchased = supplierBills.reduce((sum, b) => sum + getBillTotalAmount(b), 0);
+          const totalPaid = supplierBills.reduce((sum, b) => sum + getBillPaidAmount(b), 0);
+          const supplierCredit = getVendorCreditBalance(supplier);
+          const balance = totalPurchased - totalPaid - supplierCredit;
 
           return (
             <div key={supplier.id} className="p-8 bg-card rounded-[2.5rem] border border-border hover:shadow-2xl hover:shadow-primary/5 transition-all group relative overflow-hidden">
@@ -7335,12 +9423,21 @@ function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[]
                   <p className="text-lg font-black text-foreground">{supplierBills.length}</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1">Balance Due</p>
+                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1">
+                    {balance >= 0 ? 'Balance Due' : 'Supplier Credit'}
+                  </p>
                   <p className={`text-lg font-black ${balance > 0 ? 'text-destructive' : 'text-emerald-500'}`}>
-                    {formatCurrency(balance)}
+                    {formatCurrency(Math.abs(balance))}
                   </p>
                 </div>
               </div>
+
+              <button
+                onClick={() => setSelectedSupplierId(supplier.id)}
+                className="w-full mt-6 py-2.5 rounded-xl border border-border text-xs font-black uppercase tracking-widest text-primary hover:bg-primary/5 transition-all"
+              >
+                View Detailed Account
+              </button>
             </div>
           );
         })}
@@ -7356,6 +9453,105 @@ function SuppliersSection({ suppliers, bills }: { suppliers: any[], bills: any[]
           </div>
         )}
       </div>
+
+      {selectedSupplier && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="bg-card rounded-3xl w-full max-w-6xl p-8 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-2xl font-black text-foreground">Supplier Account: {selectedSupplier.name}</h3>
+                <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mt-1">
+                  Shared Subsidiary: {supplierSubsidiaryId || 'Not linked'} | Ledger: {selectedSupplier.ledgerAccountCode || 'Not linked'}
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedSupplierId(null)}
+                className="p-2 rounded-full hover:bg-background text-muted-foreground"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+              <div className="p-4 rounded-2xl border border-border">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Bills</p>
+                <p className="text-2xl font-black text-foreground mt-2">{supplierBills.length}</p>
+              </div>
+              <div className="p-4 rounded-2xl border border-border">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Purchase Orders</p>
+                <p className="text-2xl font-black text-foreground mt-2">{supplierPOs.length}</p>
+              </div>
+              <div className="p-4 rounded-2xl border border-border">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Journal Entries</p>
+                <p className="text-2xl font-black text-foreground mt-2">{supplierJournalEntries.length}</p>
+              </div>
+              <div className="p-4 rounded-2xl border border-border">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Journal Records</p>
+                <p className="text-2xl font-black text-foreground mt-2">{supplierJournal.length}</p>
+              </div>
+            </div>
+
+            <div className="space-y-8">
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Bills</h4>
+                <div className="space-y-2">
+                  {supplierBills.length === 0 ? <p className="text-sm text-muted-foreground">No bills found for this supplier.</p> : supplierBills.map((bill) => (
+                    <div key={bill.id} className="p-4 rounded-xl border border-border flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-bold text-foreground">{bill.description || bill.invoiceNumber || `Bill ${bill.id.slice(-6).toUpperCase()}`}</p>
+                        <p className="text-xs text-muted-foreground">status: {bill.status || 'unpaid'}</p>
+                      </div>
+                      <p className="font-black text-foreground">{formatCurrency(getBillTotalAmount(bill))}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Purchase Orders</h4>
+                <div className="space-y-2">
+                  {supplierPOs.length === 0 ? <p className="text-sm text-muted-foreground">No purchase orders found for this supplier.</p> : supplierPOs.map((po) => (
+                    <div key={po.id} className="p-4 rounded-xl border border-border flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-bold text-foreground">{po.poNumber || `PO ${po.id.slice(-6).toUpperCase()}`}</p>
+                        <p className="text-xs text-muted-foreground">status: {po.status || 'draft'}</p>
+                      </div>
+                      <p className="font-black text-foreground">{formatCurrency(toSafeNumber(po.totalAmount))}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Journal Entries</h4>
+                <div className="space-y-2">
+                  {supplierJournalEntries.length === 0 ? <p className="text-sm text-muted-foreground">No journal entries found for this supplier.</p> : supplierJournalEntries.map((entry) => (
+                    <div key={entry.id} className="p-4 rounded-xl border border-border">
+                      <p className="font-bold text-foreground">{entry.description || `Entry ${entry.id.slice(-6).toUpperCase()}`}</p>
+                      <p className="text-xs text-muted-foreground mt-1">ref: {entry.reference || 'n/a'} | subsidiary: {entry.subsidiaryId || 'n/a'}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-widest text-muted-foreground mb-3">Journal Records</h4>
+                <div className="space-y-2">
+                  {supplierJournal.length === 0 ? <p className="text-sm text-muted-foreground">No journal records found for this supplier.</p> : supplierJournal.map((entry) => (
+                    <div key={entry.id} className="p-4 rounded-xl border border-border flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-bold text-foreground">{entry.description || 'Journal record'}</p>
+                        <p className="text-xs text-muted-foreground">type: {entry.type || 'general'}</p>
+                      </div>
+                      <p className="font-black text-foreground">{formatCurrency(toSafeNumber(entry.amount))}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -7532,23 +9728,24 @@ function DeliverySection({ drivers, searchQuery, setSearchQuery }: { drivers: an
   );
 }
 
-function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppliers: any[], inventory: InventoryItem[], bills: any[], ledgerGroups: LedgerGroup[] }) {
+function PurchasesSection({ suppliers, inventory, bills }: { suppliers: any[], inventory: InventoryItem[], bills: any[] }) {
   const [activeSubTab, setActiveSubTab] = useState<'purchases' | 'orders'>('purchases');
   const [isAddingInvoice, setIsAddingInvoice] = useState(false);
   const [isAddingPO, setIsAddingPO] = useState(false);
+  const [purchaseSuccessMessage, setPurchaseSuccessMessage] = useState('');
   const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+  const [poStatusFilter, setPoStatusFilter] = useState<'all' | 'open' | 'received' | 'cancelled'>('open');
   const [selectedSupplier, setSelectedSupplier] = useState<any | null>(null);
   const [expandedBillId, setExpandedBillId] = useState<string | null>(null);
   const [expandedPOId, setExpandedPOId] = useState<string | null>(null);
-  const [paymentAccounts, setPaymentAccounts] = useState<LedgerGroup[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSavingInvoice, setIsSavingInvoice] = useState(false);
+  const [invoiceError, setInvoiceError] = useState('');
   const [invoiceForm, setInvoiceForm] = useState({
     invoiceNumber: '',
     date: new Date().toISOString().split('T')[0],
     items: [] as { inventoryItemId: string, quantity: number, price: number, name?: string }[],
-    amountPaid: 0,
     totalAmount: 0,
-    accountId: '1101',
     poId: '' // Track linked PO
   });
 
@@ -7567,12 +9764,6 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'purchase_orders'));
     return () => unsubscribe();
   }, []);
-
-  useEffect(() => {
-    // Filter Asset and Liability accounts that are marked as accounts (not groups)
-    const accounts = ledgerGroups.filter(g => (g.type === 'Asset' || g.type === 'Liability') && g.isAccount);
-    setPaymentAccounts(accounts);
-  }, [ledgerGroups]);
 
   const handleAddInvoiceItem = () => {
     if (inventory.length === 0) return;
@@ -7616,6 +9807,57 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
     setPOForm({ ...poForm, items: newItems, totalAmount: newTotal });
   };
 
+  const createStockFlowRecord = async ({
+    inventoryItem,
+    quantityChange,
+    stockAfter,
+    movementType,
+    reference,
+    locationName,
+    secondaryName,
+    costPerUnit,
+    hasCostOverride = false,
+    transfer = false,
+  }: {
+    inventoryItem: InventoryItem;
+    quantityChange: number;
+    stockAfter: number;
+    movementType: 'PURCHASE' | 'ADJUST' | 'TRANSFER' | 'SALE' | 'WASTE';
+    reference: string;
+    locationName?: string;
+    secondaryName?: string;
+    costPerUnit?: number;
+    hasCostOverride?: boolean;
+    transfer?: boolean;
+  }) => {
+    const safeQuantity = Math.abs(toSafeNumber(quantityChange));
+    const safeCost = toSafeNumber(costPerUnit);
+    const itemType = inventoryItem.category === 'finished_good' ? 2 : 1;
+
+    return await recordStockMovement({
+      inventoryItemId: inventoryItem.id,
+      itemName: inventoryItem.name,
+      type: movementType.toLowerCase(),
+      flowType: movementType,
+      qty: safeQuantity,
+      quantityChange,
+      stockAfter,
+      cost: safeCost,
+      item_id: inventoryItem.id,
+      item_type: itemType,
+      location_id: locationName || 'main',
+      location_type: 1,
+      transfer,
+      date: Date.now(),
+      from_service_id: 0,
+      primary_name: inventoryItem.name,
+      secondary_name: secondaryName || reference,
+      has_cost_override: hasCostOverride,
+      reference,
+      timestamp: serverTimestamp(),
+    });
+  };
+
   const handleSavePO = async () => {
     if (!selectedSupplier || poForm.items.length === 0) return;
     try {
@@ -7631,6 +9873,8 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
         status: 'sent',
         timestamp: serverTimestamp()
       });
+      setPurchaseSuccessMessage(`Purchase order ${poForm.poNumber} created successfully.`);
+      setTimeout(() => setPurchaseSuccessMessage(''), 3500);
       setIsAddingPO(false);
       setPOForm({
         poNumber: `PO-${Date.now().toString().slice(-6)}`,
@@ -7647,6 +9891,8 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
   };
 
   const convertPOToBill = (po: any) => {
+    if (po.status === 'received' || po.status === 'cancelled') return;
+
     setSelectedSupplier(suppliers.find(s => s.id === po.supplierId));
     setInvoiceForm({
       invoiceNumber: po.poNumber.replace('PO-', 'INV-'),
@@ -7655,13 +9901,73 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
         ...item,
         price: item.price / 100 // Convert back to dollars for the form
       })),
-      amountPaid: 0,
       totalAmount: po.totalAmount / 100,
-      accountId: '1101',
       poId: po.id
     });
     setIsAddingInvoice(true);
     setActiveSubTab('purchases');
+  };
+
+  const updatePOStatus = async (poId: string, status: 'draft' | 'sent' | 'approved' | 'received' | 'cancelled') => {
+    try {
+      const updates: any = {
+        status,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (status === 'approved') updates.approvedAt = serverTimestamp();
+      if (status === 'received') updates.receivedAt = serverTimestamp();
+
+      await updateDoc(doc(db, 'purchase_orders', poId), updates);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `purchase_orders/${poId}`);
+    }
+  };
+
+  const createPayableBillFromPO = async (po: any) => {
+    try {
+      const existingBill = bills.find(b => b.type === 'purchase' && b.poId === po.id);
+      if (existingBill) {
+        alert('A payable bill already exists for this PO.');
+        return;
+      }
+
+      const supplier = suppliers.find(s => s.id === po.supplierId);
+      const totalAmount = Math.round(Number(po.totalAmount || 0));
+
+      const billRef = await addDoc(collection(db, 'bills'), {
+        type: 'purchase',
+        invoiceNumber: `BILL-${po.poNumber}`,
+        date: new Date().toISOString().split('T')[0],
+        dueDate: po.expectedDate || new Date().toISOString().split('T')[0],
+        supplierId: po.supplierId,
+        supplierName: po.supplierName,
+        vendorId: po.supplierId,
+        subsidiaryId: supplier?.subsidiaryId || '',
+        poId: po.id,
+        items: po.items || [],
+        amount: totalAmount,
+        totalAmount,
+        amountPaid: 0,
+        status: 'unpaid',
+        createdAt: serverTimestamp(),
+        timestamp: serverTimestamp(),
+      });
+
+      await addDoc(collection(db, 'journal_entries'), {
+        date: new Date().toISOString().split('T')[0],
+        reference: `BILL-${billRef.id.slice(-6).toUpperCase()}`,
+        description: `PO Bill ${po.poNumber} (${po.supplierName})`,
+        subsidiaryId: supplier?.subsidiaryId || '',
+        timestamp: serverTimestamp(),
+        lines: [
+          { accountId: '1105', accountName: 'Inventory Asset', debit: totalAmount, credit: 0 },
+          { accountId: '2101', accountName: 'Accounts Payable', debit: 0, credit: totalAmount },
+        ],
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'bills');
+    }
   };
 
   const removeInvoiceItem = (index: number) => {
@@ -7671,40 +9977,75 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
   };
 
   const handleSaveInvoice = async () => {
-    if (!selectedSupplier || invoiceForm.items.length === 0) return;
-    try {
-      // 1. Save the bill
-      const billRef = await addDoc(collection(db, 'bills'), {
-        ...invoiceForm,
-        items: invoiceForm.items.map(item => ({
-          ...item,
-          price: Math.round(item.price * 100)
-        })),
-        totalAmount: Math.round(invoiceForm.totalAmount * 100),
-        amountPaid: Math.round(invoiceForm.amountPaid * 100),
-        supplierId: selectedSupplier.id,
-        supplierName: selectedSupplier.name,
-        type: 'purchase',
-        poId: invoiceForm.poId || null,
-        timestamp: serverTimestamp()
-      });
+    if (isSavingInvoice) return;
 
-      // Update linked PO status if exists
+    if (!selectedSupplier) {
+      setInvoiceError('Select a supplier before saving the purchase.');
+      return;
+    }
+
+    if (invoiceForm.items.length === 0) {
+      setInvoiceError('Add at least one item to the invoice.');
+      return;
+    }
+
+    const normalizedItems = invoiceForm.items
+      .map((item) => {
+        const quantity = parseFloat(String(item.quantity)) || 0;
+        const unitPrice = parseFloat(String(item.price)) || 0;
+        return {
+          ...item,
+          quantity,
+          unitPrice,
+          priceInCents: Math.round(unitPrice * 100),
+        };
+      })
+      .filter((item) => item.quantity > 0 && item.unitPrice >= 0);
+
+    if (normalizedItems.length === 0) {
+      setInvoiceError('Enter at least one line with quantity greater than 0.');
+      return;
+    }
+
+    setInvoiceError('');
+    setIsSavingInvoice(true);
+
+    try {
+      const nonBlockingWarnings: string[] = [];
+      let firstReceiptStockFlowId = 0;
+      let receiptJournalEntryId = 0;
+
+      // 1. Update linked PO as received (stock receipt only; payable bill is separate)
       if (invoiceForm.poId) {
-        await updateDoc(doc(db, 'purchase_orders', invoiceForm.poId), {
-          status: 'received',
-          receivedAt: serverTimestamp()
-        });
+        try {
+          await updateDoc(doc(db, 'purchase_orders', invoiceForm.poId), {
+            status: 'received',
+            receiptInvoiceNumber: invoiceForm.invoiceNumber || null,
+            receiptDate: invoiceForm.date,
+            receiptTotalAmount: Math.round(invoiceForm.totalAmount * 100),
+            receiptItems: normalizedItems.map(item => ({
+              ...item,
+              quantity: item.quantity,
+              price: item.priceInCents
+            })),
+            receivedAt: serverTimestamp()
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `purchase_orders/${invoiceForm.poId}`);
+          nonBlockingWarnings.push('PO status update was skipped due to permissions.');
+        }
       }
 
-      // 2. Update inventory stock, average cost and record in journal
-      for (const item of invoiceForm.items) {
+      // 2. Update inventory stock, average cost and record operational logs
+      for (const item of normalizedItems) {
         const invItem = inventory.find(i => i.id === item.inventoryItemId);
         if (invItem) {
+          const newQty = item.quantity;
+          const newUnitPrice = item.priceInCents;
+          if (newQty <= 0 || newUnitPrice < 0) continue;
+
           const currentStock = invItem.stock || 0;
           const currentCost = invItem.averageCost || invItem.costPerUnit || 0; // in cents
-          const newQty = item.quantity;
-          const newUnitPrice = Math.round(item.price * 100); // in cents
           
           let newAverageCost = currentCost;
           const newTotalStock = currentStock + newQty;
@@ -7727,64 +10068,148 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
             lastUpdated: serverTimestamp()
           });
 
-          // Record stock movement
-          await addDoc(collection(db, 'stock_movements'), {
-            inventoryItemId: item.inventoryItemId,
-            itemName: invItem.name,
-            type: 'purchase',
-            quantityChange: newQty,
-            stockAfter: newTotalStock,
-            reference: `Bill ${invoiceForm.invoiceNumber} (${selectedSupplier.name})`,
-            timestamp: serverTimestamp()
-          });
+          try {
+            const stockFlowResult = await createStockFlowRecord({
+              inventoryItem: invItem,
+              quantityChange: newQty,
+              stockAfter: newTotalStock,
+              movementType: 'PURCHASE',
+              reference: `PO Receipt ${invoiceForm.poId || invoiceForm.invoiceNumber || 'manual'} (${selectedSupplier.name})`,
+              locationName: 'main',
+              secondaryName: selectedSupplier.name,
+              costPerUnit: newUnitPrice,
+              hasCostOverride: newUnitPrice > 0,
+            });
+            if (!firstReceiptStockFlowId && stockFlowResult?.stockFlowId) {
+              firstReceiptStockFlowId = stockFlowResult.stockFlowId;
+            }
+          } catch (err) {
+            handleFirestoreError(err, OperationType.CREATE, 'stock_flow* mirrors');
+            nonBlockingWarnings.push(`Stock flow mirror skipped for ${invItem.name}.`);
+          }
 
-          // Record individual item purchase in journal for tracking
-          await addDoc(collection(db, 'journal'), {
-            type: 'expense',
-            amount: Math.round(item.quantity * item.price * 100),
-            description: `Purchase: ${invItem.name} (${item.quantity} ${invItem.unit} @ ${formatCurrency(Math.round(item.price * 100))}) from ${selectedSupplier.name}`,
-            timestamp: serverTimestamp(),
-            vendorId: selectedSupplier.id,
-            billId: billRef.id
-          });
+          // Record receipt in operational journal for traceability
+          try {
+            const receiptJournalRef = await addDoc(collection(db, 'journal'), {
+              type: 'expense',
+              amount: Math.round(newQty * newUnitPrice),
+              description: `Stock receipt: ${invItem.name} (${newQty} ${invItem.unit} @ ${formatCurrency(newUnitPrice)}) from ${selectedSupplier.name}`,
+              timestamp: serverTimestamp(),
+              vendorId: selectedSupplier.id,
+              supplierId: selectedSupplier.id,
+              poId: invoiceForm.poId || null,
+              sourceType: 'bill',
+              reference: invoiceForm.invoiceNumber || null
+            });
+            if (!receiptJournalEntryId) {
+              receiptJournalEntryId = toSqlBigInt(receiptJournalRef.id, 0);
+            }
+          } catch (err) {
+            handleFirestoreError(err, OperationType.CREATE, 'journal');
+            nonBlockingWarnings.push(`Operational journal entry skipped for ${invItem.name}.`);
+          }
         }
       }
 
-      // 3. Create a formal journal entry for the whole invoice
-      await addDoc(collection(db, 'journal_entries'), {
+      // 2b. Upsert purchase bill so the Purchases table reflects recorded receipts.
+      const invoiceTotalInCents = Math.round(
+        normalizedItems.reduce((sum, item) => sum + (item.quantity * item.priceInCents), 0)
+      );
+      const existingBill = bills.find((b) =>
+        b?.type === 'purchase' && (
+          (invoiceForm.poId && b.poId === invoiceForm.poId) ||
+          (invoiceForm.invoiceNumber && b.invoiceNumber === invoiceForm.invoiceNumber && (b.supplierId || b.vendorId) === selectedSupplier.id)
+        )
+      );
+
+      const billPayload = {
+        type: 'purchase',
+        invoiceNumber: invoiceForm.invoiceNumber || `INV-${Date.now().toString().slice(-6)}`,
         date: invoiceForm.date,
-        reference: invoiceForm.invoiceNumber,
-        description: `Purchase from ${selectedSupplier.name}`,
-        timestamp: serverTimestamp(),
-        lines: [
-          { accountId: '1105', accountName: 'Inventory', debit: Math.round(invoiceForm.totalAmount * 100), credit: 0 },
-          ...(invoiceForm.amountPaid > 0 ? [
-            { 
-              accountId: invoiceForm.accountId, 
-              accountName: paymentAccounts.find(a => a.code === invoiceForm.accountId || a.id === invoiceForm.accountId)?.name || 'Payment Account', 
-              debit: 0, 
-              credit: Math.round(invoiceForm.amountPaid * 100) 
-            }
-          ] : []),
-          ...(invoiceForm.totalAmount > invoiceForm.amountPaid ? [
-            { accountId: '2101', accountName: 'Accounts Payable', debit: 0, credit: Math.round((invoiceForm.totalAmount - invoiceForm.amountPaid) * 100) }
-          ] : [])
-        ]
-      });
+        dueDate: invoiceForm.date,
+        supplierId: selectedSupplier.id,
+        supplierName: selectedSupplier.name,
+        vendorId: selectedSupplier.id,
+        poId: invoiceForm.poId || null,
+        items: normalizedItems.map((item) => ({
+          inventoryItemId: item.inventoryItemId,
+          name: item.name,
+          quantity: item.quantity,
+          price: item.priceInCents,
+        })),
+        amount: invoiceTotalInCents,
+        totalAmount: invoiceTotalInCents,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (existingBill?.id) {
+        await updateDoc(doc(db, 'bills', existingBill.id), {
+          ...billPayload,
+          amountPaid: toSafeNumber(existingBill.amountPaid || 0),
+          status: existingBill.status || 'unpaid',
+        });
+      } else {
+        await addDoc(collection(db, 'bills'), {
+          ...billPayload,
+          amountPaid: 0,
+          status: 'unpaid',
+          createdAt: serverTimestamp(),
+          timestamp: serverTimestamp(),
+        });
+      }
+
+      // 3. SQL-like purchase mirror for db_prod_rivas compatibility (non-blocking).
+      try {
+        await addDoc(collection(db, 'purchase'), {
+          id: makeSqlLikeId(),
+          amount: Math.round(normalizedItems.reduce((sum, item) => sum + (item.quantity * item.priceInCents), 0)),
+          bill_id: toSqlBigInt(invoiceForm.poId || 0, 0),
+          info: `Receipt ${invoiceForm.invoiceNumber || ''}`,
+          initiation_date: Date.now(),
+          initiator_full_name: 'system',
+          initiator_id: 0,
+          journal_entry_id: receiptJournalEntryId,
+          purchase_date: new Date(invoiceForm.date || new Date().toISOString().split('T')[0]).getTime(),
+          purchase_id: invoiceForm.invoiceNumber || `PUR-${Date.now()}`,
+          revoked: false,
+          stock_flow_id: firstReceiptStockFlowId,
+          subtotal: Math.round(normalizedItems.reduce((sum, item) => sum + (item.quantity * item.priceInCents), 0)),
+          supplier_id: toSqlBigInt(selectedSupplier.id, 0),
+          supplier_name: selectedSupplier.name || '',
+          tax: 0,
+          convert_currency_code: null,
+          convert_currency_rate: 0,
+          timestamp: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, 'purchase');
+        nonBlockingWarnings.push('SQL purchase mirror skipped due to permissions.');
+      }
 
       setIsAddingInvoice(false);
       setInvoiceForm({
         invoiceNumber: '',
         date: new Date().toISOString().split('T')[0],
         items: [],
-        amountPaid: 0,
         totalAmount: 0,
-        accountId: '1101',
         poId: ''
       });
       setSelectedSupplier(null);
+
+      if (nonBlockingWarnings.length > 0) {
+        setPurchaseSuccessMessage(`Purchase saved with warnings: ${Array.from(new Set(nonBlockingWarnings)).join(' ')}`);
+        setTimeout(() => setPurchaseSuccessMessage(''), 7000);
+      } else {
+        setPurchaseSuccessMessage('Purchase recorded successfully.');
+        setTimeout(() => setPurchaseSuccessMessage(''), 3500);
+      }
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'bills');
+      handleFirestoreError(err, OperationType.UPDATE, 'purchases/save');
+      const msg = err instanceof Error ? err.message : 'Unknown error while saving purchase.';
+      setInvoiceError(msg);
+      alert(`Could not save purchase: ${msg}`);
+    } finally {
+      setIsSavingInvoice(false);
     }
   };
 
@@ -7794,9 +10219,50 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
     b.invoiceNumber?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const totalPurchases = filteredBills.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
-  const totalPaid = filteredBills.reduce((sum, b) => sum + (b.amountPaid || 0), 0);
-  const totalBalance = totalPurchases - totalPaid;
+  const totalPurchases = filteredBills.reduce((sum, b) => sum + getBillTotalAmount(b), 0);
+  const totalPaid = filteredBills.reduce((sum, b) => sum + getBillPaidAmount(b), 0);
+  const suppliersById = new Map(suppliers.map(s => [s.id, s]));
+  const supplierIdsInFilteredBills = new Set(filteredBills.map(b => getBillSupplierRef(b)).filter(Boolean) as string[]);
+  const totalSupplierCredits = Array.from(supplierIdsInFilteredBills).reduce((sum, supplierId) => {
+    const supplier = suppliersById.get(supplierId);
+    return sum + (supplier ? getVendorCreditBalance(supplier) : 0);
+  }, 0);
+  const totalBalance = totalPurchases - totalPaid - totalSupplierCredits;
+
+  const poBillingSummary = useMemo(() => {
+    const summary = new Map<string, { billCount: number; totalOutstanding: number; isSettled: boolean }>();
+
+    purchaseBills.forEach((bill) => {
+      if (!bill.poId) return;
+
+      const existing = summary.get(bill.poId) || { billCount: 0, totalOutstanding: 0, isSettled: false };
+      const nextOutstanding = existing.totalOutstanding + getBillOutstandingAmount(bill);
+      summary.set(bill.poId, {
+        billCount: existing.billCount + 1,
+        totalOutstanding: nextOutstanding,
+        isSettled: nextOutstanding <= 0,
+      });
+    });
+
+    return summary;
+  }, [purchaseBills]);
+
+  const filteredPOs = purchaseOrders.filter((po) => {
+    const matchesSearch =
+      po.supplierName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      po.poNumber?.toLowerCase().includes(searchQuery.toLowerCase());
+
+    if (!matchesSearch) return false;
+
+    if (poStatusFilter === 'all') return true;
+    if (poStatusFilter === 'open') {
+      if (po.status === 'cancelled') return false;
+      const billing = poBillingSummary.get(po.id);
+      if (po.status === 'received' && billing?.isSettled) return false;
+      return true;
+    }
+    return po.status === poStatusFilter;
+  });
 
   return (
     <div className="space-y-8">
@@ -7841,6 +10307,12 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
         </div>
       </div>
 
+      {purchaseSuccessMessage && (
+        <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-3 rounded-2xl text-sm font-bold">
+          <CheckCircle2 size={16} /> {purchaseSuccessMessage}
+        </div>
+      )}
+
       {activeSubTab === 'purchases' ? (
         <>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -7874,16 +10346,18 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
             </div>
             <div className="bg-card p-6 rounded-[2rem] border border-border shadow-sm">
               <div className="flex items-center gap-4 mb-4">
-                <div className="p-3 bg-red-100 text-red-600 rounded-2xl">
+                <div className={`p-3 rounded-2xl ${totalBalance >= 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'}`}>
                   <Scale size={24} />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Outstanding Balance</p>
-                  <p className="text-2xl font-black text-foreground">{formatCurrency(totalBalance)}</p>
+                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">
+                    {totalBalance >= 0 ? 'Outstanding Balance' : 'Supplier Credit'}
+                  </p>
+                  <p className="text-2xl font-black text-foreground">{formatCurrency(Math.abs(totalBalance))}</p>
                 </div>
               </div>
               <div className="w-full bg-background h-1.5 rounded-full overflow-hidden">
-                <div className="bg-red-500 h-full" style={{ width: `${totalPurchases > 0 ? (totalBalance / totalPurchases) * 100 : 0}%` }} />
+                <div className={`${totalBalance >= 0 ? 'bg-red-500' : 'bg-emerald-500'} h-full`} style={{ width: `${totalPurchases > 0 ? Math.min((Math.abs(totalBalance) / totalPurchases) * 100, 100) : 0}%` }} />
               </div>
             </div>
           </div>
@@ -7892,7 +10366,7 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
             <div className="p-8 bg-card rounded-[3rem] border border-border mb-6 shadow-2xl animate-in fade-in slide-in-from-top-4">
               <h4 className="text-xl font-black text-foreground mb-8 uppercase tracking-tight">Record Purchase Invoice</h4>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
                 <div className="space-y-2">
                   <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Supplier</label>
                   <select
@@ -7924,18 +10398,6 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                     value={invoiceForm.date}
                     onChange={e => setInvoiceForm({ ...invoiceForm, date: e.target.value })}
                   />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Payment Account</label>
-                  <select
-                    className="w-full p-4 rounded-2xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none transition-all"
-                    value={invoiceForm.accountId}
-                    onChange={e => setInvoiceForm({ ...invoiceForm, accountId: e.target.value })}
-                  >
-                    {paymentAccounts.map(acc => (
-                      <option key={acc.id} value={acc.code || acc.id}>{acc.name} ({acc.code})</option>
-                    ))}
-                  </select>
                 </div>
               </div>
 
@@ -8009,19 +10471,7 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                 )}
               </div>
 
-              <div className="border-t border-border pt-8 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
-                <div className="w-full md:w-72 space-y-2">
-                  <label className="text-[10px] font-black text-muted-foreground uppercase tracking-widest ml-1">Amount Paid Now</label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">$</span>
-                    <input
-                      type="number"
-                      className="w-full pl-8 pr-4 py-4 rounded-2xl border border-border bg-background text-foreground focus:ring-2 focus:ring-primary outline-none font-black text-2xl"
-                      value={invoiceForm.amountPaid || ''}
-                      onChange={e => setInvoiceForm({ ...invoiceForm, amountPaid: Number(e.target.value) })}
-                    />
-                  </div>
-                </div>
+              <div className="border-t border-border pt-8 flex flex-col md:flex-row justify-end items-start md:items-end gap-6">
                 <div className="text-right bg-primary/5 p-6 rounded-[2rem] border border-primary/10 w-full md:w-auto min-w-[240px]">
                   <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">Total Invoice Amount</p>
                   <p className="text-4xl font-black text-primary">{formatCurrencyDirect(invoiceForm.totalAmount)}</p>
@@ -8037,12 +10487,16 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                 </button>
                 <button
                   onClick={handleSaveInvoice}
-                  disabled={!selectedSupplier || invoiceForm.items.length === 0}
+                  disabled={isSavingInvoice || !selectedSupplier || invoiceForm.items.length === 0}
                   className="px-10 py-4 rounded-2xl text-sm font-bold bg-primary text-white hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Save Purchase & Update Stock
+                  {isSavingInvoice ? 'Saving...' : 'Save Purchase & Update Stock'}
                 </button>
               </div>
+
+              {invoiceError && (
+                <p className="mt-4 text-sm font-semibold text-red-600">{invoiceError}</p>
+              )}
             </div>
           )}
 
@@ -8061,7 +10515,12 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {filteredBills.map(bill => (
+                  {filteredBills.map(bill => {
+                    const billTotal = getBillTotalAmount(bill);
+                    const billPaid = getBillPaidAmount(bill);
+                    const billBalance = getBillOutstandingAmount(bill);
+
+                    return (
                     <React.Fragment key={bill.id}>
                       <tr 
                         onClick={() => setExpandedBillId(expandedBillId === bill.id ? null : bill.id)}
@@ -8083,11 +10542,11 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                         <td className="px-8 py-6 text-sm text-foreground/80 font-medium">
                           {bill.items?.length || 0} items
                         </td>
-                        <td className="px-8 py-6 text-sm font-black text-foreground text-right">{formatCurrency(bill.totalAmount || 0)}</td>
-                        <td className="px-8 py-6 text-sm font-black text-emerald-500 text-right">{formatCurrency(bill.amountPaid || 0)}</td>
+                        <td className="px-8 py-6 text-sm font-black text-foreground text-right">{formatCurrency(billTotal)}</td>
+                        <td className="px-8 py-6 text-sm font-black text-emerald-500 text-right">{formatCurrency(billPaid)}</td>
                         <td className="px-8 py-6 text-sm font-black text-destructive text-right">
-                          <span className={((bill.totalAmount || 0) - (bill.amountPaid || 0)) > 0 ? 'bg-red-50 text-red-600 px-3 py-1.5 rounded-lg border border-red-100' : 'text-zinc-300'}>
-                            {formatCurrency((bill.totalAmount || 0) - (bill.amountPaid || 0))}
+                          <span className={billBalance > 0 ? 'bg-red-50 text-red-600 px-3 py-1.5 rounded-lg border border-red-100' : 'text-zinc-300'}>
+                            {formatCurrency(billBalance)}
                           </span>
                         </td>
                       </tr>
@@ -8125,7 +10584,7 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                         </tr>
                       )}
                     </React.Fragment>
-                  ))}
+                  )})}
                   {filteredBills.length === 0 && (
                     <tr>
                       <td colSpan={7} className="px-8 py-24 text-center">
@@ -8143,6 +10602,33 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
         </>
       ) : (
         <>
+          <div className="flex items-center gap-2 mb-4">
+            <button
+              onClick={() => setPoStatusFilter('open')}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${poStatusFilter === 'open' ? 'bg-primary text-white' : 'bg-card border border-border text-muted-foreground'}`}
+            >
+              Open
+            </button>
+            <button
+              onClick={() => setPoStatusFilter('received')}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${poStatusFilter === 'received' ? 'bg-primary text-white' : 'bg-card border border-border text-muted-foreground'}`}
+            >
+              Received
+            </button>
+            <button
+              onClick={() => setPoStatusFilter('cancelled')}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${poStatusFilter === 'cancelled' ? 'bg-primary text-white' : 'bg-card border border-border text-muted-foreground'}`}
+            >
+              Cancelled
+            </button>
+            <button
+              onClick={() => setPoStatusFilter('all')}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${poStatusFilter === 'all' ? 'bg-primary text-white' : 'bg-card border border-border text-muted-foreground'}`}
+            >
+              All
+            </button>
+          </div>
+
           {isAddingPO && (
             <div className="p-8 bg-card rounded-[3rem] border border-border mb-6 shadow-2xl animate-in fade-in slide-in-from-top-4">
               <h4 className="text-xl font-black text-foreground mb-8 uppercase tracking-tight">Create Purchase Order</h4>
@@ -8287,11 +10773,16 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {purchaseOrders.filter(po => 
-                    po.status !== 'received' && (
-                    po.supplierName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    po.poNumber?.toLowerCase().includes(searchQuery.toLowerCase()))
-                  ).map(po => (
+                  {filteredPOs.map(po => {
+                    const billing = poBillingSummary.get(po.id);
+                    const hasLinkedBill = (billing?.billCount || 0) > 0;
+                    const hasOutstanding = (billing?.totalOutstanding || 0) > 0;
+                    const isSettled = hasLinkedBill && !hasOutstanding;
+                    const poDisplayStatus = po.status === 'received'
+                      ? (hasLinkedBill ? (isSettled ? 'settled' : 'billed') : 'received')
+                      : po.status;
+
+                    return (
                     <React.Fragment key={po.id}>
                       <tr 
                         onClick={() => setExpandedPOId(expandedPOId === po.id ? null : po.id)}
@@ -8310,24 +10801,101 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                         </td>
                         <td className="px-8 py-6">
                           <span className={`px-2 py-1 rounded-lg text-[10px] font-black uppercase ${
-                            po.status === 'received' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-blue-500/20 text-blue-500'
+                            poDisplayStatus === 'settled'
+                              ? 'bg-emerald-500/20 text-emerald-500'
+                              : poDisplayStatus === 'billed'
+                                ? 'bg-amber-500/20 text-amber-500'
+                                : poDisplayStatus === 'received'
+                              ? 'bg-emerald-500/20 text-emerald-500'
+                              : po.status === 'approved'
+                                ? 'bg-purple-500/20 text-purple-500'
+                                : po.status === 'cancelled'
+                                  ? 'bg-red-500/20 text-red-500'
+                                  : 'bg-blue-500/20 text-blue-500'
                           }`}>
-                            {po.status}
+                            {poDisplayStatus}
                           </span>
                         </td>
                         <td className="px-8 py-6 text-sm font-black text-foreground text-right">{formatCurrency(po.totalAmount || 0)}</td>
                         <td className="px-8 py-6 text-right">
-                          {po.status !== 'received' && (
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                convertPOToBill(po);
-                              }}
-                              className="text-[10px] font-black text-primary hover:text-primary/80 uppercase tracking-widest bg-primary/10 px-3 py-2 rounded-xl transition-all"
-                            >
-                              Receive Items
-                            </button>
-                          )}
+                          <div className="flex items-center justify-end gap-2">
+                            {po.status === 'draft' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updatePOStatus(po.id, 'sent');
+                                }}
+                                className="text-[10px] font-black text-blue-500 hover:text-blue-400 uppercase tracking-widest bg-blue-500/10 px-3 py-2 rounded-xl transition-all"
+                              >
+                                Send
+                              </button>
+                            )}
+
+                            {(po.status === 'sent' || po.status === 'draft') && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updatePOStatus(po.id, 'approved');
+                                }}
+                                className="text-[10px] font-black text-purple-500 hover:text-purple-400 uppercase tracking-widest bg-purple-500/10 px-3 py-2 rounded-xl transition-all"
+                              >
+                                Approve
+                              </button>
+                            )}
+
+                            {(po.status === 'approved' || po.status === 'sent') && (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  convertPOToBill(po);
+                                }}
+                                className="text-[10px] font-black text-primary hover:text-primary/80 uppercase tracking-widest bg-primary/10 px-3 py-2 rounded-xl transition-all"
+                              >
+                                Receive Stock
+                              </button>
+                            )}
+
+                            {po.status === 'received' && !hasLinkedBill && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  createPayableBillFromPO(po);
+                                }}
+                                className="text-[10px] font-black text-emerald-600 hover:text-emerald-500 uppercase tracking-widest bg-emerald-500/10 px-3 py-2 rounded-xl transition-all"
+                              >
+                                Create Bill
+                              </button>
+                            )}
+
+                            {po.status === 'received' && hasLinkedBill && (
+                              <>
+                                <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-xl ${hasOutstanding ? 'text-amber-600 bg-amber-500/10' : 'text-emerald-600 bg-emerald-500/10'}`}>
+                                  {hasOutstanding ? `Unpaid ${formatCurrency(billing?.totalOutstanding || 0)}` : 'Settled'}
+                                </span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveSubTab('purchases');
+                                  }}
+                                  className="text-[10px] font-black text-primary hover:text-primary/80 uppercase tracking-widest bg-primary/10 px-3 py-2 rounded-xl transition-all"
+                                >
+                                  View Bills
+                                </button>
+                              </>
+                            )}
+
+                            {po.status !== 'received' && po.status !== 'cancelled' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  updatePOStatus(po.id, 'cancelled');
+                                }}
+                                className="text-[10px] font-black text-red-500 hover:text-red-400 uppercase tracking-widest bg-red-500/10 px-3 py-2 rounded-xl transition-all"
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                       {expandedPOId === po.id && (
@@ -8364,7 +10932,7 @@ function PurchasesSection({ suppliers, inventory, bills, ledgerGroups }: { suppl
                         </tr>
                       )}
                     </React.Fragment>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </div>

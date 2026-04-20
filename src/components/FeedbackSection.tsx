@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp } from 'firebase/firestore';
+import { collection, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
 import { db, OperationType, handleFirestoreError } from '../firebase';
 import { 
   Star, MessageSquare, User, Calendar, Trash2, Reply, CheckCircle2, 
@@ -25,6 +26,8 @@ export default function FeedbackSection() {
   const [searchTerm, setSearchTerm] = useState('');
   const [respondingTo, setRespondingTo] = useState<Feedback | null>(null);
   const [responseMsg, setResponseMsg] = useState('');
+
+  const safeText = (value: unknown) => (typeof value === 'string' ? value : '');
 
   useEffect(() => {
     const q = query(collection(db, 'feedback'), orderBy('createdAt', 'desc'));
@@ -60,8 +63,10 @@ export default function FeedbackSection() {
 
   const filteredFeedbacks = feedbacks.filter(f => {
     const matchesFilter = filter === 'all' || f.status === filter;
-    const matchesSearch = f.customerName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          f.comment.toLowerCase().includes(searchTerm.toLowerCase());
+    const customerName = safeText(f.customerName);
+    const comment = safeText(f.comment);
+    const matchesSearch = customerName.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                          comment.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesFilter && matchesSearch;
   });
 
@@ -161,10 +166,10 @@ export default function FeedbackSection() {
             <div className="flex justify-between items-start relative z-10">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-[1.25rem] bg-foreground text-card flex items-center justify-center font-black text-sm uppercase shadow-lg">
-                  {f.customerName.charAt(0)}
+                  {safeText(f.customerName).charAt(0) || '?'}
                 </div>
                 <div>
-                  <h4 className="font-black text-foreground text-base tracking-tight">{f.customerName}</h4>
+                  <h4 className="font-black text-foreground text-base tracking-tight">{safeText(f.customerName) || 'Anonymous Guest'}</h4>
                   <div className="flex items-center gap-1 mt-0.5">
                     {[1, 2, 3, 4, 5].map(star => (
                       <Star key={star} size={12} className={star <= f.rating ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground/50'} />
@@ -186,7 +191,7 @@ export default function FeedbackSection() {
             </div>
 
             <p className="text-sm font-medium text-foreground italic leading-relaxed bg-muted/10 p-5 rounded-[1.5rem] border border-border/30">
-              "{f.comment}"
+              "{safeText(f.comment) || 'No comment provided.'}"
             </p>
 
             {f.response ? (
@@ -210,7 +215,7 @@ export default function FeedbackSection() {
 
             <div className="flex items-center justify-between text-[9px] text-muted-foreground font-black uppercase tracking-widest border-t border-border pt-4 mt-2">
               <span className="flex items-center gap-1.5"><Calendar size={12} className="text-primary" /> {formatDate(f.createdAt)}</span>
-              {f.orderId && <span className="bg-muted px-2 py-0.5 rounded-md">ID: {f.orderId.slice(-6).toUpperCase()}</span>}
+              {f.orderId && <span className="bg-muted px-2 py-0.5 rounded-md">ID: {safeText(f.orderId).slice(-6).toUpperCase()}</span>}
             </div>
           </div>
         ))}

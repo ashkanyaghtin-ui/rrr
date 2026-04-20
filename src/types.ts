@@ -59,6 +59,7 @@ export interface Order {
   tableNumber?: string;
   tableId?: string;
   kotNo?: string;
+  billId?: string;
   orderNo?: string;
   waiter?: string;
   occupancy?: number;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, onSnapshot, query, where, orderBy, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, updateDoc, doc } from 'firebase/firestore';
+import { safeOnSnapshot as onSnapshot } from '../utils/firestoreSafeSnapshot';
 import { ChefHat, CheckCircle2, Clock, Volume2, VolumeX, AlertCircle, Maximize2, Minimize2, Utensils, Package, Truck } from 'lucide-react';
 import { Order } from '../types';
 

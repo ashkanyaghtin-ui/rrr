@@ -5,10 +5,10 @@ import ProfileModal from './ProfileModal';
 import { AnimatePresence } from 'motion/react';
 
 export default function Auth() {
-  const { user, login, logout } = useAuth();
+  const { user, profile, login, logout } = useAuth() as any;
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
-  if (user) {
+  if (user && !user.isAnonymous) {
     return (
       <>
         <div className="flex items-center gap-2">
@@ -20,8 +20,10 @@ export default function Auth() {
               <UserIcon size={16} />
             </div>
             <div className="text-left hidden sm:flex flex-col justify-center">
-              <p className="text-[11px] font-black text-foreground leading-tight">{user.displayName || 'Account'}</p>
-              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-[0.1em] mt-0.5">Profile Settings</p>
+              <p className="text-[11px] font-black text-foreground leading-tight">{profile?.displayName || user.displayName || profile?.email || user.email || 'Account'}</p>
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-[0.1em] mt-0.5">
+                {(profile?.role || (user.isAnonymous ? 'guest' : 'user'))} • Profile Settings
+              </p>
             </div>
           </button>
           <div className="h-4 w-px bg-border mx-1" />

@@ -220,6 +220,133 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    match /pos_sessions/{sessionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid && request.resource.data.status == 'open';
+      allow update: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /pos_session_approvals/{approvalId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.approvedByUserId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.approvedByUserId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // POS parity and audit collections
+    match /order_states/{stateId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /order_state_history/{historyId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /status_change_record/{recordId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /saved_pos_print/{printId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /saved_pos_prints/{printId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_break_events/{eventId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_break_event/{eventId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_change_cash_transactions/{transactionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_change_cash_transaction/{transactionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_cart_data/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_cart_datas/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_cart_item/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_cart_items/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_customer/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_customers/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_waiter/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_waiters/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_table/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /pos_session_tables/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
     match /stores/{storeId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
@@ -344,6 +471,42 @@ service cloud.firestore {
     }
 
     match /purchase_orders/{poId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // SQL compatibility mirrors used by purchase and stock workflows.
+    // Keep these authenticated to prevent false permission failures during receipt posting.
+    match /purchase/{purchaseId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /inventory_flow/{flowId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /stock_item/{itemId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /stock_flow_item/{itemId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /stock_flow_items/{linkId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /stock_flow_transaction_ids/{transactionId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /stock_movements/{movementId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /stock_flow/{flowId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
